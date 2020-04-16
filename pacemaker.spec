@@ -231,9 +231,10 @@ BuildRequires: libqb-devel >= 0.17.0
 BuildRequires: coreutils findutils grep sed
 
 # Required for core functionality
-BuildRequires: automake autoconf gcc libtool pkgconfig libtool-ltdl-devel
+BuildRequires: automake autoconf gcc libtool pkgconfig libtool-devel
 BuildRequires: pkgconfig(glib-2.0) >= 2.16
-BuildRequires: libxml2-devel libxslt-devel libuuid-devel
+#BuildRequires: libxml2-devel libxslt-devel libuuid-devel
+BuildRequires: libxml2-devel libxslt-devel util-linux-devel
 BuildRequires: bzip2-devel
 
 # Enables optional functionality
@@ -366,7 +367,7 @@ Summary:       Pacemaker development package
 Group:         Development/Libraries
 Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
 Requires:      %{name}-cluster-libs%{?_isa} = %{version}-%{release}
-Requires:      libuuid-devel%{?_isa} libtool-ltdl-devel%{?_isa}
+Requires:      util-linux-devel%{?_isa} libtool-devel%{?_isa}
 Requires:      libxml2-devel%{?_isa} libxslt-devel%{?_isa}
 Requires:      bzip2-devel%{?_isa} glib2-devel%{?_isa}
 Requires:      libqb-devel%{?_isa}
