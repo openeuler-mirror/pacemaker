@@ -1,0 +1,44 @@
+From 47ecd21b9acb108eb4e024c51cdefadac2d74a64 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jan=20Pokorn=C3=BD?= <jpokorny@redhat.com>
+Date: Tue, 26 Nov 2019 20:07:36 +0100
+Subject: [PATCH] Build: fix unability to build with Inkscape 1.0 beta
+ version(s)
+
+...and possibly beyond.
+
+References:
+https://gitlab.com/inkscape/inbox/issues/1244
+---
+ doc/Makefile.am | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/doc/Makefile.am b/doc/Makefile.am
+index 257f5cdf5..d8c846830 100644
+--- a/doc/Makefile.am
++++ b/doc/Makefile.am
+@@ -84,14 +84,19 @@ PNGS = $(PNGS_ORIGINAL) $(PNGS_GENERATED)
+ 
+ graphics: $(PNGS)
+ 
++
++# two-phased attempts for Inkscape pre-1.0 and 1.0+ (upcoming) discrepancy
+ %.png: %.svg
+-	$(AM_V_GEN)$(INKSCAPE) --file=$< --export-dpi=90 -C --export-png=$@ $(PCMK_quiet)
++	$(AM_V_GEN) { $(INKSCAPE) --export-dpi=90 -C --export-png=$@ $< \
++	  || $(INKSCAPE) --export-dpi=90 -C --export-file=$@ $<; } $(PCMK_quiet)
+ 
+ %-small.png: %.svg
+-	$(AM_V_GEN)$(INKSCAPE) --file=$< --export-dpi=45 -C --export-png=$@ $(PCMK_quiet)
++	$(AM_V_GEN) { $(INKSCAPE) --export-dpi=45 -C --export-png=$@ $< \
++	  || $(INKSCAPE) --export-dpi=45 -C --export-file=$@ $<; } $(PCMK_quiet)
+ 
+ %-large.png: %.svg
+-	$(AM_V_GEN)$(INKSCAPE) --file=$< --export-dpi=180 -C --export-png=$@ $(PCMK_quiet)
++	$(AM_V_GEN) { $(INKSCAPE) --export-dpi=180 -C --export-png=$@ $< \
++	  || $(INKSCAPE) --export-dpi=180 -C --export-file=$@ $<; } $(PCMK_quiet)
+ 
+ if IS_ASCIIDOC
+ ASCIIDOC_HTML_ARGS	= --unsafe --backend=xhtml11
+-- 
+2.24.0
+
