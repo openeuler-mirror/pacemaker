@@ -115,27 +115,13 @@
 %endif
 
 
-# Define the release version
-# (do not look at externally enforced pre-release flag for tagged releases
-# as only -rc tags, captured with the second condition, implies that then)
-%if (!%{tag_release} && %{with pre_release}) || 0%{pre_release}
-%if 0%{pre_release}
-%define pcmk_release 0.%{specversion}.%(s=%{shortcommit}; echo ${s: -3})
-%else
-%define pcmk_release 0.%{specversion}.%{shortcommit}.git
-%endif
-%else
-%if 0%{tag_release}
 %define pcmk_release %{specversion}
-%else
-%define pcmk_release %{specversion}.%{shortcommit}.git
-%endif
-%endif
+
 
 Name:          pacemaker
 Summary:       Scalable High-Availability cluster resource manager
 Version:       %{pcmkversion}
-Release:       %{pcmk_release}%{?dist}
+Release:       %{pcmk_release}
 License:       GPLv2+ and LGPLv2+
 Url:           http://www.clusterlabs.org
 
@@ -281,7 +267,7 @@ License:       GPLv2+ and LGPLv2+
 Summary:       Pacemaker development package
 Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
 Requires:      %{name}-cluster-libs%{?_isa} = %{version}-%{release}
-Requires:      libtool-ltdl-devel%{?_isa} libuuid-devel%{?_isa}
+Requires:      libtool-ltdl-devel libuuid-devel
 Requires:      libxml2-devel%{?_isa} libxslt-devel%{?_isa}
 Requires:      bzip2-devel%{?_isa} glib2-devel%{?_isa}
 Requires:      libqb-devel%{?_isa}
@@ -714,4 +700,7 @@ exit 0
 
 %changelog
 * Thu Nov 05 2020 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.3-1
+- Upgrade the pacemaker package version to 2.0.3-1
+
+* Wed Apr 15 2020 houjian<houjian@kylinos.cn> - 2.0.2-3.2
 - Init pacemaker project
