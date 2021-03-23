@@ -13,8 +13,8 @@
 ## Upstream pacemaker version, and its package version (specversion
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
-%global pcmkversion 2.0.2
-%global specversion 3
+%global pcmkversion 2.0.3
+%global specversion 2
 
 ## Upstream commit (or git tag, such as "Pacemaker-" plus the
 ## {pcmkversion} macro for an official release) to use for this package
@@ -204,9 +204,10 @@ Group:         System Environment/Daemons
 # Hint: use "spectool -s 0 pacemaker.spec" (rpmdevtools) to check the final URL:
 # https://github.com/ClusterLabs/pacemaker/archive/e91769e5a39f5cb2f7b097d3c612368f0530535e/pacemaker-e91769e.tar.gz
 Source0:       https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{shortcommit}.tar.gz
-Source1:       nagios-agents-metadata-%{nagios_hash}.tar.gz
-
-# upstream commits
+Source1:       https://github.com/%{github_owner}/%{nagios_name}/archive/%{nagios_hash}/%{nagios_name}-%{nagios_hash}.tar.gz
+# ---
+Patch0:        Build-fix-unability-to-build-with-Inkscape-1.0-beta-.patch
+Patch1:        Resolve-the-failure-of-time-matching-in-test-cases.patch
 
 Requires:      resource-agents
 Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
@@ -445,7 +446,11 @@ The metadata files required for Pacemaker to execute the nagios plugin
 monitor resources.
 
 %prep
-%autosetup -a 1 -n %{name}-%{commit} -S git_am -p 1
+%setup -q -a 1 -n %{name}-%{commit}
+%global __scm git_am
+%__scm_setup_git
+%patch0 -p1
+%patch1 -p1
 
 %build
 
@@ -879,5 +884,11 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Tue Mar 23 2021 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.3-2
+- Add 'Resolve-the-failure-of-time-matching-in-test-cases.patch' file 2.0.3-2
+
+* Thu Nov 05 2020 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.3-1
+- Upgrade the pacemaker package version to 2.0.3-1
+
 * Wed Apr 15 2020 houjian<houjian@kylinos.cn> - 2.0.2-3.2
 - Init pacemaker project
