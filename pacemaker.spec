@@ -14,7 +14,7 @@
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
 %global pcmkversion 2.0.3
-%global specversion 1
+%global specversion 2
 
 ## Upstream commit (or git tag, such as "Pacemaker-" plus the
 ## {pcmkversion} macro for an official release) to use for this package
@@ -130,6 +130,7 @@ Source0:       https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{na
 Source1:       https://github.com/%{github_owner}/%{nagios_name}/archive/%{nagios_hash}/%{nagios_name}-%{nagios_hash}.tar.gz
 # ---
 Patch0:        Build-fix-unability-to-build-with-Inkscape-1.0-beta-.patch
+Patch1:        Resolve-the-failure-of-time-matching-in-test-cases.patch
 
 Requires:      resource-agents
 Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
@@ -336,7 +337,8 @@ monitor resources.
 %setup -q -a 1 -n %{name}-%{commit}
 %global __scm git_am
 %__scm_setup_git
-%autopatch -p1
+%patch0 -p1
+%patch1 -p1
 
 %build
 
@@ -699,6 +701,9 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Tue Mar 23 2021 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.3-2
+- Add 'Resolve-the-failure-of-time-matching-in-test-cases.patch' file 2.0.3-2
+
 * Thu Nov 05 2020 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.3-1
 - Upgrade the pacemaker package version to 2.0.3-1
 
