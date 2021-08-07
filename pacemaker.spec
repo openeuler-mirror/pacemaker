@@ -14,7 +14,7 @@
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
 %global pcmkversion 2.0.3
-%global specversion 2
+%global specversion 3
 
 ## Upstream commit (or git tag, such as "Pacemaker-" plus the
 ## {pcmkversion} macro for an official release) to use for this package
@@ -131,6 +131,8 @@ Source1:       https://github.com/%{github_owner}/%{nagios_name}/archive/%{nagio
 # ---
 Patch0:        Build-fix-unability-to-build-with-Inkscape-1.0-beta-.patch
 Patch1:        Resolve-the-failure-of-time-matching-in-test-cases.patch
+Patch2:        fix-multiple-definition-of-attributes-error.patch
+Patch3:        fix-multiple-definition-of-rsc_list-error.patch
 
 Requires:      resource-agents
 Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
@@ -339,6 +341,8 @@ monitor resources.
 %__scm_setup_git
 %patch0 -p1
 %patch1 -p1
+%patch2 -p1
+%patch3 -p1
 
 %build
 
@@ -701,6 +705,9 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Sat Aug 07 2021 wangyue <wangyue92@huawei.com> - 2.0.3-3
+- fix build error with gcc 10
+
 * Tue Mar 23 2021 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.3-2
 - Add 'Resolve-the-failure-of-time-matching-in-test-cases.patch' file 2.0.3-2
 
