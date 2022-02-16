@@ -3,6 +3,7 @@
 ## User and group to use for nonprivileged services
 %global uname hacluster
 %global gname haclient
+%global hacluster_id 189
 
 ## Where to install Pacemaker documentation
 %global pcmk_docdir %{_docdir}/%{name}
@@ -13,12 +14,12 @@
 ## Upstream pacemaker version, and its package version (specversion
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
-%global pcmkversion 2.0.3
-%global specversion 3
+%global pcmkversion 2.0.5
+%global specversion 1
 
 ## Upstream commit (or git tag, such as "Pacemaker-" plus the
 ## {pcmkversion} macro for an official release) to use for this package
-%global commit Pacemaker-2.0.3
+%global commit Pacemaker-2.0.5
 ## Since git v2.11, the extent of abbreviation is autoscaled by default
 ## (used to be constant of 7), so we need to convey it for non-tags, too.
 %global commit_abbrev 9
@@ -26,7 +27,7 @@
 ## Nagios source control identifiers
 %global nagios_name nagios-agents-metadata
 %global nagios_hash 105ab8a7b2c16b9a29cf1c1596b80136eeef332b
-
+%global nagios_archive_github_url %{nagios_hash}#/%{nagios_name}-%{nagios_hash}.tar.gz
 
 # Define globals for convenient use later
 
@@ -34,18 +35,26 @@
 %global lparen (
 %global rparen )
 
-## Short version of git commit
-%define shortcommit %(c=%{commit}; case ${c} in
-                      Pacemaker-*%{rparen} echo ${c:10};;
-                      *%{rparen} echo ${c:0:%{commit_abbrev}};; esac)
+## Whether this is a tagged release (final or release candidate)
+%define tag_release %(c=%{commit}; case ${c} in Pacemaker-*%{rparen} echo 1 ;;
+                      *%{rparen} echo 0 ;; esac)
 
-## Whether this is a tagged release
-%define tag_release %([ %{commit} != Pacemaker-%{shortcommit} ]; echo $?)
-
-## Whether this is a release candidate (in case of a tagged release)
-%define pre_release %([ "%{tag_release}" -eq 0 ] || {
-                      case "%{shortcommit}" in *-rc[[:digit:]]*%{rparen} false;;
-                      esac; }; echo $?)
+## Portion of export/dist tarball name after "pacemaker-", and release version
+%if 0%{tag_release}
+%define archive_version %{commit}
+%define archive_github_url %{commit}#/%{name}-%{archive_version}.tar.gz
+%define pcmk_release %(c=%{commit}; case $c in *-rc[[:digit:]]*%{rparen}
+                       echo 0.%{specversion}.${c: -3} ;;
+                       *%{rparen} echo %{specversion} ;; esac)
+%else
+%define archive_version %(c=%{commit}; echo ${c:0:%{commit_abbrev}})
+%define archive_github_url %{archive_version}#/%{name}-%{archive_version}.tar.gz
+%if %{with pre_release}
+%define pcmk_release 0.%{specversion}.%{archive_version}.git
+%else
+%define pcmk_release %{specversion}.%{archive_version}.git
+%endif
+%endif
 
 ## Heuristic used to infer bleeding-edge deployments that are
 ## less likely to have working versions of the documentation tools
@@ -72,16 +81,19 @@
 
 ## Values that differ by Python major version
 %global python_path /usr/bin/python%{?python3_pkgversion}%{!?python3_pkgversion:3}
-%global python_pkg python3
+%global python_name python3
 %global python_min 3.2
-%define py_site %{?python3_sitelib}%{!?python3_sitelib:%(
-  python3 -c 'from distutils.sysconfig import get_python_lib as gpl; print(gpl(1))' 2>/dev/null)}
+%define python_site %{?python3_sitelib}%{!?python3_sitelib:%(
+  %{python_path} -c 'from distutils.sysconfig import get_python_lib as gpl; print(gpl(1))' 2>/dev/null)}
 
 
 # Define conditionals so that "rpmbuild --with <feature>" and
 # "rpmbuild --without <feature>" can enable and disable specific features
 
-## NOTE: skip --with stonith
+## NOTE: skip --with stonithd
+
+## Add option to enable support for storing sensitive information outside CIB
+%bcond_with cibsecrets
 
 ## Add option to create binaries suitable for use with profiling tools
 %bcond_with profiling
@@ -89,7 +101,7 @@
 ## Add option to create binaries with coverage analysis
 %bcond_with coverage
 
-## Add option to skip generating documentation
+## Add option to skip/enable generating documentation
 ## (the build tools aren't available everywhere)
 %bcond_without doc
 
@@ -115,34 +127,30 @@
 %endif
 
 
-%define pcmk_release %{specversion}
-
 
 Name:          pacemaker
 Summary:       Scalable High-Availability cluster resource manager
 Version:       %{pcmkversion}
 Release:       %{pcmk_release}
 License:       GPLv2+ and LGPLv2+
-Url:           http://www.clusterlabs.org
+Url:           https://www.clusterlabs.org
 
 # Hint: use "spectool -s 0 pacemaker.spec" (rpmdevtools) to check the final URL
-Source0:       https://github.com/%{github_owner}/%{name}/archive/%{commit}/%{name}-%{shortcommit}.tar.gz
-Source1:       https://github.com/%{github_owner}/%{nagios_name}/archive/%{nagios_hash}/%{nagios_name}-%{nagios_hash}.tar.gz
+Source0:       https://codeload.github.com/%{github_owner}/%{name}/tar.gz/%{archive_github_url}
+Source1:       https://codeload.github.com/%{github_owner}/%{nagios_name}/tar.gz/%{nagios_archive_github_url}
 # ---
-Patch0:        Build-fix-unability-to-build-with-Inkscape-1.0-beta-.patch
-Patch1:        Resolve-the-failure-of-time-matching-in-test-cases.patch
-Patch2:        fix-multiple-definition-of-attributes-error.patch
-Patch3:        fix-multiple-definition-of-rsc_list-error.patch
+Patch0:        fix-function-declaration-error.patch
 
 Requires:      resource-agents
-Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
-Requires:      %{name}-cluster-libs%{?_isa} = %{version}-%{release}
+Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{name}-cluster-libs = %{version}-%{release}
 Requires:      %{name}-cli = %{version}-%{release}
 %{?systemd_requires}
 
 # Pacemaker requires a minimum Python functionality
-Requires:      %{python_pkg} >= %{python_min}
-BuildRequires: %{python_pkg}-devel >= %{python_min}
+Requires:      %{python_name} >= %{python_min}
+BuildRequires: make
+BuildRequires: %{python_name}-devel >= %{python_min}
 
 # Pacemaker requires a minimum libqb functionality
 Requires:      libqb >= 0.13.0
@@ -170,17 +178,17 @@ BuildRequires: corosynclib-devel >= 2.0.0
 #BuildRequires: pkgconfig(libcfg)
 
 ## (note no avoiding effect when building through non-customized mock)
-#%%if !%%{bleeding}
-#%%if %%{with doc}
-#BuildRequires: asciidoc inkscape publican
-#%%endif
-#%%endif
+# %if !%{bleeding}
+# %if %{with doc}
+# BuildRequires: asciidoc inkscape publican
+# %endif
+# %endif
 
 # git-style patch application
-BuildRequires: git
+# BuildRequires: git
 
 Provides:      pcmk-cluster-manager = %{version}-%{release}
-Provides:      pcmk-cluster-manager%{?_isa} = %{version}-%{release}
+Provides:      pcmk-cluster-manager = %{version}-%{release}
 
 # Pacemaker uses the crypto/md5 module from gnulib
 Provides:      bundled(gnulib)
@@ -197,15 +205,16 @@ when related resources fail and can be configured to periodically check
 resource health.
 
 Available rpmbuild rebuild options:
-  --with(out) : coverage doc hardening pre_release profiling
+  --with(out) : cibsecrets coverage doc hardening pre_release profiling
 
 %package cli
 License:       GPLv2+ and LGPLv2+
 Summary:       Command line tools for controlling Pacemaker clusters
-Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
-%if 0%{?fedora} > 22 || 0%{?rhel} > 7
+Requires:      %{name}-libs = %{version}-%{release}
 Recommends:    pcmk-cluster-manager = %{version}-%{release}
-%endif
+# For crm_report
+Recommends:    tar
+Recommends:    bzip2
 Requires:      perl-TimeDate
 Requires:      procps-ng
 Requires:      psmisc
@@ -237,7 +246,7 @@ nodes and those just running the CLI tools.
 %package cluster-libs
 License:       GPLv2+ and LGPLv2+
 Summary:       Cluster Libraries used by Pacemaker
-Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
+Requires:      %{name}-libs = %{version}-%{release}
 
 %description cluster-libs
 Pacemaker is an advanced, scalable High-Availability cluster resource
@@ -249,13 +258,13 @@ libraries needed for nodes that will form part of the cluster nodes.
 %package remote
 License:       GPLv2+ and LGPLv2+
 Summary:       Pacemaker remote daemon for non-cluster nodes
-Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
+Requires:      %{name}-libs = %{version}-%{release}
 Requires:      %{name}-cli = %{version}-%{release}
 Requires:      resource-agents
 # -remote can be fully independent of systemd
 %{?systemd_ordering}%{!?systemd_ordering:%{?systemd_requires}}
 Provides:      pcmk-cluster-manager = %{version}-%{release}
-Provides:      pcmk-cluster-manager%{?_isa} = %{version}-%{release}
+Provides:      pcmk-cluster-manager = %{version}-%{release}
 
 %description remote
 Pacemaker is an advanced, scalable High-Availability cluster resource
@@ -268,13 +277,13 @@ nodes not running the full corosync/cluster stack.
 %package libs-devel
 License:       GPLv2+ and LGPLv2+
 Summary:       Pacemaker development package
-Requires:      %{name}-libs%{?_isa} = %{version}-%{release}
-Requires:      %{name}-cluster-libs%{?_isa} = %{version}-%{release}
+Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{name}-cluster-libs = %{version}-%{release}
 Requires:      libtool-ltdl-devel libuuid-devel
-Requires:      libxml2-devel%{?_isa} libxslt-devel%{?_isa}
-Requires:      bzip2-devel%{?_isa} glib2-devel%{?_isa}
-Requires:      libqb-devel%{?_isa}
-Requires:      corosynclib-devel%{?_isa} >= 2.0.0
+Requires:      libxml2-devel libxslt-devel
+Requires:      bzip2-devel glib2-devel
+Requires:      libqb-devel
+Requires:      corosynclib-devel >= 2.0.0
 
 %description libs-devel
 Pacemaker is an advanced, scalable High-Availability cluster resource
@@ -286,21 +295,24 @@ for developing tools for Pacemaker.
 %package       cts
 License:       GPLv2+ and LGPLv2+
 Summary:       Test framework for cluster-related technologies like Pacemaker
-Requires:      %{python_pkg} >= %{python_min}
+Requires:      %{python_name} >= %{python_min}
+Requires:      %{python_path}
 Requires:      %{name}-libs = %{version}-%{release}
 Requires:      procps-ng
 Requires:      psmisc
 BuildArch:     noarch
 
-Requires:      %{python_pkg}-systemd
+Requires:      %{python_name}-systemd
 
 %description   cts
 Test framework for cluster-related technologies like Pacemaker
 
 %package       doc
-License:       CC-BY-SA
+License:       CC-BY-SA-4.0
 Summary:       Documentation for Pacemaker
 BuildArch:     noarch
+Conflicts:     %{name}-libs > %{version}-%{release}
+Conflicts:     %{name}-libs < %{version}-%{release}
 
 %description   doc
 Documentation for Pacemaker.
@@ -324,11 +336,11 @@ License:       GPLv3
 Summary:       Pacemaker Nagios Metadata
 BuildArch:     noarch
 # NOTE below are the plugins this metadata uses.
-Requires:      nagios-plugins-http
-Requires:      nagios-plugins-ldap
-Requires:      nagios-plugins-mysql
-Requires:      nagios-plugins-pgsql
-Requires:      nagios-plugins-tcp
+# Requires:      nagios-plugins-http
+# Requires:      nagios-plugins-ldap
+# Requires:      nagios-plugins-mysql
+# Requires:      nagios-plugins-pgsql
+# Requires:      nagios-plugins-tcp
 Requires:      pcmk-cluster-manager
 
 %description  nagios-plugins-metadata
@@ -336,19 +348,10 @@ The metadata files required for Pacemaker to execute the nagios plugin
 monitor resources.
 
 %prep
-%setup -q -a 1 -n %{name}-%{commit}
-%global __scm git_am
-%__scm_setup_git
-%patch0 -p1
-%patch1 -p1
-%patch2 -p1
-%patch3 -p1
+%setup -q -a 1 -n %{name}-%{archive_version}
+%patch0
 
 %build
-
-# Early versions of autotools (e.g. RHEL <= 5) do not support --docdir
-export docdir=%{pcmk_docdir}
-
 export systemdsystemunitdir=%{?_unitdir}%{!?_unitdir:no}
 
 %if %{with hardening}
@@ -374,8 +377,10 @@ export CPPFLAGS="-UPCMK_TIME_EMERGENCY_CGT $CPPFLAGS"
         %{!?with_legacy_links: --disable-legacy-links}                          \
         %{?with_profiling:     --with-profiling}                                \
         %{?with_coverage:      --with-coverage}                                 \
+        %{?with_cibsecrets:    --with-cibsecrets}                               \
         %{!?with_doc:          --with-brand=}                                   \
         %{?gnutls_priorities:  --with-gnutls-priorities="%{gnutls_priorities}"} \
+        --disable-static                                                        \
         --with-initdir=%{_initrddir}                                            \
         --with-runstatedir=%{_rundir}                                           \
         --localstatedir=%{_var}                                                 \
@@ -388,6 +393,7 @@ export CPPFLAGS="-UPCMK_TIME_EMERGENCY_CGT $CPPFLAGS"
 make %{_smp_mflags} V=1
 
 %check
+make %{_smp_mflags} check
 { cts/cts-scheduler --run load-stopped-loop \
   && cts/cts-cli \
   && touch .CHECKED
@@ -440,7 +446,7 @@ rm -f %{buildroot}/%{_initrddir}/pacemaker_remote
 %if %{defined py_byte_compile} && %{defined python_path}
 %{py_byte_compile %{python_path} %{buildroot}%{_datadir}/pacemaker/tests}
 %if !%{defined _python_bytecompile_extra}
-%{py_byte_compile %{python_path} %{buildroot}%{py_site}/cts}
+%{py_byte_compile %{python_path} %{buildroot}%{python_site}/cts}
 %endif
 %endif
 
@@ -500,7 +506,7 @@ fi
 
 %post cli
 %systemd_post crm_mon.service
-if [ "$1" = 2 ]; then
+if [ "$1" -eq 2 ]; then
     # Package upgrade, not initial install:
     # Move any pre-2.0 logs to new location to ensure they get rotated
     { mv -fbS.rpmsave %{_var}/log/pacemaker.log* %{_var}/log/pacemaker \
@@ -518,8 +524,8 @@ fi
 # XXX keep an eye on https://fedoraproject.org/wiki/Changes/SystemdSysusers
 #     reopened recently:
 # https://lists.fedoraproject.org/archives/list/devel@lists.fedoraproject.org/message/AETGESYR4IEQJMA6SKL7OERSDZFWFNEU/
-getent group %{gname} >/dev/null || groupadd -r %{gname} -g 189
-getent passwd %{uname} >/dev/null || useradd -r -g %{gname} -u 189 -s /sbin/nologin -c "cluster user" %{uname}
+getent group %{gname} >/dev/null || groupadd -r %{gname} -g %{hacluster_id}
+getent passwd %{uname} >/dev/null || useradd -r -g %{gname} -u %{hacluster_id} -s /sbin/nologin -c "cluster user" %{uname}
 exit 0
 
 %ldconfig_scriptlets libs
@@ -574,6 +580,9 @@ exit 0
 
 %{_sbindir}/attrd_updater
 %{_sbindir}/cibadmin
+%if %{with cibsecrets}
+%{_sbindir}/cibsecret
+%endif
 %{_sbindir}/crm_diff
 %{_sbindir}/crm_error
 %{_sbindir}/crm_failcount
@@ -669,7 +678,7 @@ exit 0
 %license licenses/CC-BY-SA-4.0
 
 %files cts
-%{py_site}/cts
+%{python_site}/cts
 %{_datadir}/pacemaker/tests
 
 %{_libexecdir}/pacemaker/cts-log-watcher
@@ -705,6 +714,9 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Wed Feb 16 2022 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.5-1
+- upgrade to 2.0.5
+
 * Sat Aug 07 2021 wangyue <wangyue92@huawei.com> - 2.0.3-3
 - fix build error with gcc 10
 
