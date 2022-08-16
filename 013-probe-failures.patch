@@ -1,0 +1,26 @@
+From 186d5a02fba919c455fd6eeb050b4be107f82159 Mon Sep 17 00:00:00 2001
+From: Chris Lumens <clumens@redhat.com>
+Date: Thu, 13 Jan 2022 17:02:47 -0500
+Subject: [PATCH] Low: scheduler: Use the old RC code to log maskable probe
+ failures.
+
+---
+ lib/pengine/unpack.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/pengine/unpack.c b/lib/pengine/unpack.c
+index 8a2d2a6d6d..b01f86257a 100644
+--- a/lib/pengine/unpack.c
++++ b/lib/pengine/unpack.c
+@@ -3780,7 +3780,7 @@ unpack_rsc_op(pe_resource_t *rsc, pe_node_t *node, xmlNode *xml_op,
+ 
+     if (maskable_probe_failure) {
+         crm_notice("Treating probe result '%s' for %s on %s as 'not running'",
+-                   services_ocf_exitcode_str(rc), rsc->id, node->details->uname);
++                   services_ocf_exitcode_str(old_rc), rsc->id, node->details->uname);
+         update_resource_state(rsc, node, xml_op, task, target_rc, *last_failure,
+                               on_fail, data_set);
+         crm_xml_add(xml_op, XML_ATTR_UNAME, node->details->uname);
+-- 
+2.27.0
+
