@@ -1,0 +1,2476 @@
+From 8e6362cb2129bd56f817d449a195f3da87a545fa Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 12 Nov 2021 14:28:56 -0600
+Subject: [PATCH 01/13] Refactor: libcrmcommon,fencer: convenience macro for
+ initializing results
+
+for future reuse
+---
+ daemons/fenced/fenced_commands.c      | 14 ++------------
+ include/crm/common/results_internal.h | 15 +++++++++++++++
+ 2 files changed, 17 insertions(+), 12 deletions(-)
+
+diff --git a/daemons/fenced/fenced_commands.c b/daemons/fenced/fenced_commands.c
+index 87600573e..9f2f1cc40 100644
+--- a/daemons/fenced/fenced_commands.c
++++ b/daemons/fenced/fenced_commands.c
+@@ -388,12 +388,7 @@ static void
+ report_internal_result(async_command_t *cmd, int exit_status,
+                        int execution_status, const char *exit_reason)
+ {
+-    pcmk__action_result_t result = {
+-        // Ensure we don't pass garbage to free()
+-        .exit_reason = NULL,
+-        .action_stdout = NULL,
+-        .action_stderr = NULL
+-    };
++    pcmk__action_result_t result = PCMK__UNKNOWN_RESULT;
+ 
+     pcmk__set_result(&result, exit_status, execution_status, exit_reason);
+     cmd->done_cb(0, &result, cmd);
+@@ -2616,12 +2611,7 @@ stonith_fence_get_devices_cb(GList * devices, void *user_data)
+     }
+ 
+     if (device == NULL) { // No device found
+-        pcmk__action_result_t result = {
+-            // Ensure we don't pass garbage to free()
+-            .exit_reason = NULL,
+-            .action_stdout = NULL,
+-            .action_stderr = NULL
+-        };
++        pcmk__action_result_t result = PCMK__UNKNOWN_RESULT;
+ 
+         pcmk__set_result(&result, CRM_EX_ERROR, PCMK_EXEC_NO_FENCE_DEVICE,
+                          "No fence device configured for target");
+diff --git a/include/crm/common/results_internal.h b/include/crm/common/results_internal.h
+index 804bf2a7a..6befaa0ed 100644
+--- a/include/crm/common/results_internal.h
++++ b/include/crm/common/results_internal.h
+@@ -30,6 +30,21 @@ typedef struct {
+     char *action_stderr;    // Action error output
+ } pcmk__action_result_t;
+ 
++/*!
++ * \internal
++ * \brief Static initialization for an action result
++ *
++ * \note Importantly, this ensures pcmk__reset_result() won't try to free
++ *       garbage.
++ */
++#define PCMK__UNKNOWN_RESULT {                  \
++        .exit_status = CRM_EX_OK,               \
++        .execution_status = PCMK_EXEC_UNKNOWN,  \
++        .exit_reason = NULL,                    \
++        .action_stdout = NULL,                  \
++        .action_stderr = NULL,                  \
++    }
++
+ void pcmk__set_result(pcmk__action_result_t *result, int exit_status,
+                       enum pcmk_exec_status exec_status,
+                       const char *exit_reason);
+-- 
+2.27.0
+
+
+From 0937c92476ac737a5f5146932824bde8bdd7db98 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 12 Nov 2021 16:02:27 -0600
+Subject: [PATCH 02/13] Refactor: various: add convenience function for
+ checking result success
+
+A successful pcmk__action_result_t has both exit status CRM_EX_OK (a.k.a
+PCMK_OCF_OK) and execution status PCMK_EXEC_DONE. Since checking that is
+clunky, we sometimes just check exit status, which is less than ideal.
+
+The convenience function makes it easy to check both, and improves readability.
+---
+ daemons/controld/controld_remote_ra.c |  4 ++--
+ daemons/execd/execd_commands.c        | 12 ++++++------
+ daemons/fenced/fenced_commands.c      | 14 ++++++--------
+ include/crm/common/results_internal.h | 16 ++++++++++++++++
+ lib/fencing/st_client.c               |  4 ++--
+ lib/fencing/st_rhcs.c                 |  2 +-
+ 6 files changed, 33 insertions(+), 19 deletions(-)
+
+diff --git a/daemons/controld/controld_remote_ra.c b/daemons/controld/controld_remote_ra.c
+index 74cbfd673..55ac162c7 100644
+--- a/daemons/controld/controld_remote_ra.c
++++ b/daemons/controld/controld_remote_ra.c
+@@ -297,7 +297,7 @@ static void
+ check_remote_node_state(remote_ra_cmd_t *cmd)
+ {
+     /* Only successful actions can change node state */
+-    if (cmd->result.exit_status != PCMK_OCF_OK) {
++    if (!pcmk__result_ok(&(cmd->result))) {
+         return;
+     }
+ 
+@@ -365,7 +365,7 @@ report_remote_ra_result(remote_ra_cmd_t * cmd)
+     lrmd__set_result(&op, cmd->result.exit_status, cmd->result.execution_status,
+                      cmd->result.exit_reason);
+ 
+-    if (cmd->reported_success && (cmd->result.exit_status != PCMK_OCF_OK)) {
++    if (cmd->reported_success && !pcmk__result_ok(&(cmd->result))) {
+         op.t_rcchange = (unsigned int) time(NULL);
+         /* This edge case will likely never ever occur, but if it does the
+          * result is that a failure will not be processed correctly. This is only
+diff --git a/daemons/execd/execd_commands.c b/daemons/execd/execd_commands.c
+index 667525039..02070bf11 100644
+--- a/daemons/execd/execd_commands.c
++++ b/daemons/execd/execd_commands.c
+@@ -878,7 +878,7 @@ action_complete(svc_action_t * action)
+     }
+ 
+     if (pcmk__str_eq(rclass, PCMK_RESOURCE_CLASS_SYSTEMD, pcmk__str_casei)) {
+-        if ((cmd->result.exit_status == PCMK_OCF_OK)
++        if (pcmk__result_ok(&(cmd->result))
+             && pcmk__strcase_any_of(cmd->action, "start", "stop", NULL)) {
+             /* systemd returns from start and stop actions after the action
+              * begins, not after it completes. We have to jump through a few
+@@ -894,7 +894,7 @@ action_complete(svc_action_t * action)
+             if (cmd->result.execution_status == PCMK_EXEC_PENDING) {
+                 goagain = true;
+ 
+-            } else if ((cmd->result.exit_status == PCMK_OCF_OK)
++            } else if (pcmk__result_ok(&(cmd->result))
+                        && pcmk__str_eq(cmd->real_action, "stop", pcmk__str_casei)) {
+                 goagain = true;
+ 
+@@ -927,12 +927,12 @@ action_complete(svc_action_t * action)
+ #if SUPPORT_NAGIOS
+     if (rsc && pcmk__str_eq(rsc->class, PCMK_RESOURCE_CLASS_NAGIOS, pcmk__str_casei)) {
+         if (action_matches(cmd, "monitor", 0)
+-            && (cmd->result.exit_status == PCMK_OCF_OK)) {
++            && pcmk__result_ok(&(cmd->result))) {
+             /* Successfully executed --version for the nagios plugin */
+             cmd->result.exit_status = PCMK_OCF_NOT_RUNNING;
+ 
+         } else if (pcmk__str_eq(cmd->action, "start", pcmk__str_casei)
+-                   && (cmd->result.exit_status != PCMK_OCF_OK)) {
++                   && !pcmk__result_ok(&(cmd->result))) {
+ #ifdef PCMK__TIME_USE_CGT
+             goagain = true;
+ #endif
+@@ -955,7 +955,7 @@ action_complete(svc_action_t * action)
+             cmd->start_delay = delay;
+             cmd->timeout = timeout_left;
+ 
+-            if (cmd->result.exit_status == PCMK_OCF_OK) {
++            if (pcmk__result_ok(&(cmd->result))) {
+                 crm_debug("%s %s may still be in progress: re-scheduling (elapsed=%dms, remaining=%dms, start_delay=%dms)",
+                           cmd->rsc_id, cmd->real_action, time_sum, timeout_left, delay);
+ 
+@@ -1066,7 +1066,7 @@ stonith_action_complete(lrmd_cmd_t * cmd, int rc)
+                                                          cmd->interval_ms, rc);
+ 
+         // Certain successful actions change the known state of the resource
+-        if ((rsc != NULL) && (cmd->result.exit_status == PCMK_OCF_OK)) {
++        if ((rsc != NULL) && pcmk__result_ok(&(cmd->result))) {
+             if (pcmk__str_eq(cmd->action, "start", pcmk__str_casei)) {
+                 rsc->st_probe_rc = pcmk_ok; // maps to PCMK_OCF_OK
+             } else if (pcmk__str_eq(cmd->action, "stop", pcmk__str_casei)) {
+diff --git a/daemons/fenced/fenced_commands.c b/daemons/fenced/fenced_commands.c
+index 9f2f1cc40..26501a4b3 100644
+--- a/daemons/fenced/fenced_commands.c
++++ b/daemons/fenced/fenced_commands.c
+@@ -1188,8 +1188,7 @@ dynamic_list_search_cb(int pid, const pcmk__action_result_t *result,
+ 
+     mainloop_set_trigger(dev->work);
+ 
+-    if ((result->execution_status == PCMK_EXEC_DONE)
+-        && (result->exit_status == CRM_EX_OK)) {
++    if (pcmk__result_ok(result)) {
+         crm_info("Refreshing target list for %s", dev->id);
+         g_list_free_full(dev->targets, free);
+         dev->targets = stonith__parse_targets(result->action_stdout);
+@@ -2310,15 +2309,14 @@ log_async_result(async_command_t *cmd, const pcmk__action_result_t *result,
+     GString *msg = g_string_sized_new(80); // Reasonable starting size
+ 
+     // Choose log levels appropriately if we have a result
+-    if ((result->execution_status == PCMK_EXEC_DONE)
+-        && (result->exit_status == CRM_EX_OK))  { // Success
++    if (pcmk__result_ok(result)) {
+         log_level = (cmd->victim == NULL)? LOG_DEBUG : LOG_NOTICE;
+         if ((result->action_stdout != NULL)
+             && !pcmk__str_eq(cmd->action, "metadata", pcmk__str_casei)) {
+             output_log_level = LOG_DEBUG;
+         }
+         next = NULL;
+-    } else { // Failure
++    } else {
+         log_level = (cmd->victim == NULL)? LOG_NOTICE : LOG_ERR;
+         if ((result->action_stdout != NULL)
+             && !pcmk__str_eq(cmd->action, "metadata", pcmk__str_casei)) {
+@@ -2482,7 +2480,7 @@ st_child_done(int pid, const pcmk__action_result_t *result, void *user_data)
+     /* The device is ready to do something else now */
+     device = g_hash_table_lookup(device_list, cmd->device);
+     if (device) {
+-        if (!device->verified && (result->exit_status == CRM_EX_OK) &&
++        if (!device->verified && pcmk__result_ok(result) &&
+             (pcmk__strcase_any_of(cmd->action, "list", "monitor", "status", NULL))) {
+ 
+             device->verified = TRUE;
+@@ -2491,7 +2489,7 @@ st_child_done(int pid, const pcmk__action_result_t *result, void *user_data)
+         mainloop_set_trigger(device->work);
+     }
+ 
+-    if (result->exit_status == CRM_EX_OK) {
++    if (pcmk__result_ok(result)) {
+         GList *iter;
+         /* see if there are any required devices left to execute for this op */
+         for (iter = cmd->device_next; iter != NULL; iter = iter->next) {
+@@ -2523,7 +2521,7 @@ st_child_done(int pid, const pcmk__action_result_t *result, void *user_data)
+ 
+     send_async_reply(cmd, result, pid, false);
+ 
+-    if (result->exit_status != CRM_EX_OK) {
++    if (!pcmk__result_ok(result)) {
+         goto done;
+     }
+ 
+diff --git a/include/crm/common/results_internal.h b/include/crm/common/results_internal.h
+index 6befaa0ed..0c5833937 100644
+--- a/include/crm/common/results_internal.h
++++ b/include/crm/common/results_internal.h
+@@ -54,4 +54,20 @@ void pcmk__set_result_output(pcmk__action_result_t *result,
+ 
+ void pcmk__reset_result(pcmk__action_result_t *result);
+ 
++/*!
++ * \internal
++ * \brief Check whether a result is OK
++ *
++ * \param[in] result
++ *
++ * \return true if the result's exit status is CRM_EX_OK and its
++ *         execution status is PCMK_EXEC_DONE, otherwise false
++ */
++static inline bool
++pcmk__result_ok(const pcmk__action_result_t *result)
++{
++    return (result != NULL) && (result->exit_status == CRM_EX_OK)
++            && (result->execution_status == PCMK_EXEC_DONE);
++}
++
+ #endif // PCMK__COMMON_RESULTS_INTERNAL__H
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index 2fbff7f24..af461d0d4 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -760,7 +760,7 @@ stonith__result2rc(const pcmk__action_result_t *result)
+         default:                        break;
+     }
+ 
+-    if (result->exit_status == CRM_EX_OK) {
++    if (pcmk__result_ok(result)) {
+         return pcmk_rc_ok;
+     }
+ 
+@@ -797,7 +797,7 @@ stonith_action_async_done(svc_action_t *svc_action)
+ 
+     log_action(action, action->pid);
+ 
+-    if ((action->result.exit_status != CRM_EX_OK)
++    if (!pcmk__result_ok(&(action->result))
+         && update_remaining_timeout(action)) {
+ 
+         int rc = internal_stonith_action_execute(action);
+diff --git a/lib/fencing/st_rhcs.c b/lib/fencing/st_rhcs.c
+index 6c8cbedc7..865e04bc2 100644
+--- a/lib/fencing/st_rhcs.c
++++ b/lib/fencing/st_rhcs.c
+@@ -148,7 +148,7 @@ stonith__rhcs_get_metadata(const char *agent, int timeout, xmlNode **metadata)
+         return rc;
+     }
+ 
+-    if (result->exit_status != CRM_EX_OK) {
++    if (!pcmk__result_ok(result)) {
+         crm_warn("Metadata action for %s returned error code %d",
+                  agent, result->exit_status);
+         rc = pcmk_rc2legacy(stonith__result2rc(result));
+-- 
+2.27.0
+
+
+From 4c39ff00a0c028354a9da7f80986f7e34b05ba08 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 12 Nov 2021 16:07:01 -0600
+Subject: [PATCH 03/13] Low: fencing: improve mapping of execution status to
+ legacy return code
+
+PCMK_EXEC_PENDING is likely not possible with the current code, but map it to
+EINPROGRESS for completeness.
+
+PCMK_EXEC_INVALID is not yet used by the fencer but will be.
+---
+ lib/fencing/st_client.c | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index af461d0d4..93513e9f3 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -749,7 +749,12 @@ update_remaining_timeout(stonith_action_t * action)
+ int
+ stonith__result2rc(const pcmk__action_result_t *result)
+ {
++    if (pcmk__result_ok(result)) {
++        return pcmk_rc_ok;
++    }
++
+     switch (result->execution_status) {
++        case PCMK_EXEC_PENDING:         return EINPROGRESS;
+         case PCMK_EXEC_CANCELLED:       return ECANCELED;
+         case PCMK_EXEC_TIMEOUT:         return ETIME;
+         case PCMK_EXEC_NOT_INSTALLED:   return ENOENT;
+@@ -757,11 +762,28 @@ stonith__result2rc(const pcmk__action_result_t *result)
+         case PCMK_EXEC_NOT_CONNECTED:   return ENOTCONN;
+         case PCMK_EXEC_NO_FENCE_DEVICE: return ENODEV;
+         case PCMK_EXEC_NO_SECRETS:      return EACCES;
+-        default:                        break;
+-    }
+ 
+-    if (pcmk__result_ok(result)) {
+-        return pcmk_rc_ok;
++        /* For the fencing API, PCMK_EXEC_INVALID is used with fencer API
++         * operations that don't involve executing an agent (for example,
++         * registering devices). This allows us to use the CRM_EX_* codes in the
++         * exit status for finer-grained responses.
++         */
++        case PCMK_EXEC_INVALID:
++            switch (result->exit_status) {
++                case CRM_EX_INSUFFICIENT_PRIV:  return EACCES;
++                case CRM_EX_PROTOCOL:           return EPROTO;
++
++               /* CRM_EX_EXPIRED is used for orphaned fencing operations left
++                * over from a previous instance of the fencer. For API backward
++                * compatibility, this is mapped to the previously used code for
++                * this case, EHOSTUNREACH.
++                */
++                case CRM_EX_EXPIRED:            return EHOSTUNREACH;
++                default:                        break;
++            }
++
++        default:
++            break;
+     }
+ 
+     // Try to provide useful error code based on result's error output
+-- 
+2.27.0
+
+
+From 4e638783d1cd7c9398a603fc6df7e9d868262b16 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Thu, 18 Nov 2021 11:41:12 -0600
+Subject: [PATCH 04/13] Refactor: libstonithd: separate action-related code
+ into own source file
+
+Everything related to stonith_action_t has been moved from st_client.c to a new
+st_actions.c, since st_client.c was ridiculously large, and the action stuff
+isn't all client-related. No code was changed.
+
+Before:
+   2804 st_client.c
+
+After:
+   545 lib/fencing/st_actions.c
+  2278 lib/fencing/st_client.c
+---
+ lib/fencing/Makefile.am  |   2 +-
+ lib/fencing/st_actions.c | 545 +++++++++++++++++++++++++++++++++++++++
+ lib/fencing/st_client.c  | 528 +------------------------------------
+ 3 files changed, 547 insertions(+), 528 deletions(-)
+ create mode 100644 lib/fencing/st_actions.c
+
+diff --git a/lib/fencing/Makefile.am b/lib/fencing/Makefile.am
+index 205c4873d..dac215c16 100644
+--- a/lib/fencing/Makefile.am
++++ b/lib/fencing/Makefile.am
+@@ -22,7 +22,7 @@ libstonithd_la_LDFLAGS	+= $(LDFLAGS_HARDENED_LIB)
+ libstonithd_la_LIBADD	= $(top_builddir)/lib/common/libcrmcommon.la
+ libstonithd_la_LIBADD   += $(top_builddir)/lib/services/libcrmservice.la
+ 
+-libstonithd_la_SOURCES	= st_client.c st_output.c st_rhcs.c
++libstonithd_la_SOURCES	= st_actions.c st_client.c st_output.c st_rhcs.c
+ if BUILD_LHA_SUPPORT
+ libstonithd_la_SOURCES	+= st_lha.c
+ endif
+diff --git a/lib/fencing/st_actions.c b/lib/fencing/st_actions.c
+new file mode 100644
+index 000000000..64d3afd5d
+--- /dev/null
++++ b/lib/fencing/st_actions.c
+@@ -0,0 +1,545 @@
++/*
++ * Copyright 2004-2021 the Pacemaker project contributors
++ *
++ * The version control history for this file may have further details.
++ *
++ * This source code is licensed under the GNU Lesser General Public License
++ * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
++ */
++
++#include <crm_internal.h>
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <libgen.h>
++#include <inttypes.h>
++#include <sys/types.h>
++#include <glib.h>
++
++#include <crm/crm.h>
++#include <crm/stonith-ng.h>
++#include <crm/fencing/internal.h>
++#include <crm/msg_xml.h>
++#include <crm/services_internal.h>
++
++#include "fencing_private.h"
++
++struct stonith_action_s {
++    /*! user defined data */
++    char *agent;
++    char *action;
++    char *victim;
++    GHashTable *args;
++    int timeout;
++    int async;
++    void *userdata;
++    void (*done_cb) (int pid, const pcmk__action_result_t *result,
++                     void *user_data);
++    void (*fork_cb) (int pid, void *user_data);
++
++    svc_action_t *svc_action;
++
++    /*! internal timing information */
++    time_t initial_start_time;
++    int tries;
++    int remaining_timeout;
++    int max_retries;
++
++    int pid;
++    pcmk__action_result_t result;
++};
++
++static int internal_stonith_action_execute(stonith_action_t *action);
++static void log_action(stonith_action_t *action, pid_t pid);
++
++/*!
++ * \internal
++ * \brief Set an action's result based on services library result
++ *
++ * \param[in] action      Fence action to set result for
++ * \param[in] svc_action  Service action to get result from
++ */
++static void
++set_result_from_svc_action(stonith_action_t *action, svc_action_t *svc_action)
++{
++    pcmk__set_result(&(action->result), svc_action->rc, svc_action->status,
++                     services__exit_reason(svc_action));
++    pcmk__set_result_output(&(action->result),
++                            services__grab_stdout(svc_action),
++                            services__grab_stderr(svc_action));
++}
++
++static void
++log_action(stonith_action_t *action, pid_t pid)
++{
++    /* The services library has already logged the output at info or debug
++     * level, so just raise to warning for stderr.
++     */
++    if (action->result.action_stderr != NULL) {
++        /* Logging the whole string confuses syslog when the string is xml */
++        char *prefix = crm_strdup_printf("%s[%d] stderr:", action->agent, pid);
++
++        crm_log_output(LOG_WARNING, prefix, action->result.action_stderr);
++        free(prefix);
++    }
++}
++
++static void
++append_config_arg(gpointer key, gpointer value, gpointer user_data)
++{
++    /* The fencer will filter "action" out when it registers the device,
++     * but ignore it here in case any external API users don't.
++     *
++     * Also filter out parameters handled directly by Pacemaker.
++     */
++    if (!pcmk__str_eq(key, STONITH_ATTR_ACTION_OP, pcmk__str_casei)
++        && !pcmk_stonith_param(key)
++        && (strstr(key, CRM_META) == NULL)
++        && !pcmk__str_eq(key, "crm_feature_set", pcmk__str_casei)) {
++
++        crm_trace("Passing %s=%s with fence action",
++                  (const char *) key, (const char *) (value? value : ""));
++        g_hash_table_insert((GHashTable *) user_data,
++                            strdup(key), strdup(value? value : ""));
++    }
++}
++
++static GHashTable *
++make_args(const char *agent, const char *action, const char *victim,
++          uint32_t victim_nodeid, GHashTable * device_args,
++          GHashTable * port_map, const char *host_arg)
++{
++    GHashTable *arg_list = NULL;
++    const char *value = NULL;
++
++    CRM_CHECK(action != NULL, return NULL);
++
++    arg_list = pcmk__strkey_table(free, free);
++
++    // Add action to arguments (using an alias if requested)
++    if (device_args) {
++        char buffer[512];
++
++        snprintf(buffer, sizeof(buffer), "pcmk_%s_action", action);
++        value = g_hash_table_lookup(device_args, buffer);
++        if (value) {
++            crm_debug("Substituting '%s' for fence action %s targeting %s",
++                      value, action, victim);
++            action = value;
++        }
++    }
++    g_hash_table_insert(arg_list, strdup(STONITH_ATTR_ACTION_OP),
++                        strdup(action));
++
++    /* If this is a fencing operation against another node, add more standard
++     * arguments.
++     */
++    if (victim && device_args) {
++        const char *param = NULL;
++
++        /* Always pass the target's name, per
++         * https://github.com/ClusterLabs/fence-agents/blob/master/doc/FenceAgentAPI.md
++         */
++        g_hash_table_insert(arg_list, strdup("nodename"), strdup(victim));
++
++        // If the target's node ID was specified, pass it, too
++        if (victim_nodeid) {
++            char *nodeid = crm_strdup_printf("%" PRIu32, victim_nodeid);
++
++            // cts-fencing looks for this log message
++            crm_info("Passing '%s' as nodeid with fence action '%s' targeting %s",
++                     nodeid, action, victim);
++            g_hash_table_insert(arg_list, strdup("nodeid"), nodeid);
++        }
++
++        // Check whether target must be specified in some other way
++        param = g_hash_table_lookup(device_args, PCMK_STONITH_HOST_ARGUMENT);
++        if (!pcmk__str_eq(agent, "fence_legacy", pcmk__str_none)
++            && !pcmk__str_eq(param, "none", pcmk__str_casei)) {
++
++            if (param == NULL) {
++                /* Use the caller's default for pcmk_host_argument, or "port" if
++                 * none was given
++                 */
++                param = (host_arg == NULL)? "port" : host_arg;
++            }
++            value = g_hash_table_lookup(device_args, param);
++
++            if (pcmk__str_eq(value, "dynamic",
++                             pcmk__str_casei|pcmk__str_null_matches)) {
++                /* If the host argument was "dynamic" or not explicitly specified,
++                 * add it with the target
++                 */
++                const char *alias = NULL;
++
++                if (port_map) {
++                    alias = g_hash_table_lookup(port_map, victim);
++                }
++                if (alias == NULL) {
++                    alias = victim;
++                }
++                crm_debug("Passing %s='%s' with fence action %s targeting %s",
++                          param, alias, action, victim);
++                g_hash_table_insert(arg_list, strdup(param), strdup(alias));
++            }
++        }
++    }
++
++    if (device_args) {
++        g_hash_table_foreach(device_args, append_config_arg, arg_list);
++    }
++
++    return arg_list;
++}
++
++/*!
++ * \internal
++ * \brief Free all memory used by a stonith action
++ *
++ * \param[in,out] action  Action to free
++ */
++void
++stonith__destroy_action(stonith_action_t *action)
++{
++    if (action) {
++        free(action->agent);
++        if (action->args) {
++            g_hash_table_destroy(action->args);
++        }
++        free(action->action);
++        free(action->victim);
++        if (action->svc_action) {
++            services_action_free(action->svc_action);
++        }
++        pcmk__reset_result(&(action->result));
++        free(action);
++    }
++}
++
++/*!
++ * \internal
++ * \brief Get the result of an executed stonith action
++ *
++ * \param[in] action  Executed action
++ *
++ * \return Pointer to action's result (or NULL if \p action is NULL)
++ */
++pcmk__action_result_t *
++stonith__action_result(stonith_action_t *action)
++{
++    return (action == NULL)? NULL : &(action->result);
++}
++
++#define FAILURE_MAX_RETRIES 2
++stonith_action_t *
++stonith_action_create(const char *agent,
++                      const char *_action,
++                      const char *victim,
++                      uint32_t victim_nodeid,
++                      int timeout, GHashTable * device_args,
++                      GHashTable * port_map, const char *host_arg)
++{
++    stonith_action_t *action;
++
++    action = calloc(1, sizeof(stonith_action_t));
++    action->args = make_args(agent, _action, victim, victim_nodeid,
++                             device_args, port_map, host_arg);
++    crm_debug("Preparing '%s' action for %s using agent %s",
++              _action, (victim? victim : "no target"), agent);
++    action->agent = strdup(agent);
++    action->action = strdup(_action);
++    if (victim) {
++        action->victim = strdup(victim);
++    }
++    action->timeout = action->remaining_timeout = timeout;
++    action->max_retries = FAILURE_MAX_RETRIES;
++
++    pcmk__set_result(&(action->result), PCMK_OCF_UNKNOWN, PCMK_EXEC_UNKNOWN,
++                     "Initialization bug in fencing library");
++
++    if (device_args) {
++        char buffer[512];
++        const char *value = NULL;
++
++        snprintf(buffer, sizeof(buffer), "pcmk_%s_retries", _action);
++        value = g_hash_table_lookup(device_args, buffer);
++
++        if (value) {
++            action->max_retries = atoi(value);
++        }
++    }
++
++    return action;
++}
++
++static gboolean
++update_remaining_timeout(stonith_action_t * action)
++{
++    int diff = time(NULL) - action->initial_start_time;
++
++    if (action->tries >= action->max_retries) {
++        crm_info("Attempted to execute agent %s (%s) the maximum number of times (%d) allowed",
++                 action->agent, action->action, action->max_retries);
++        action->remaining_timeout = 0;
++    } else if ((action->result.execution_status != PCMK_EXEC_TIMEOUT)
++               && (diff < (action->timeout * 0.7))) {
++        /* only set remaining timeout period if there is 30%
++         * or greater of the original timeout period left */
++        action->remaining_timeout = action->timeout - diff;
++    } else {
++        action->remaining_timeout = 0;
++    }
++    return action->remaining_timeout ? TRUE : FALSE;
++}
++
++/*!
++ * \internal
++ * \brief Map a fencing action result to a standard return code
++ *
++ * \param[in] result  Fencing action result to map
++ *
++ * \return Standard Pacemaker return code that best corresponds to \p result
++ */
++int
++stonith__result2rc(const pcmk__action_result_t *result)
++{
++    if (pcmk__result_ok(result)) {
++        return pcmk_rc_ok;
++    }
++
++    switch (result->execution_status) {
++        case PCMK_EXEC_PENDING:         return EINPROGRESS;
++        case PCMK_EXEC_CANCELLED:       return ECANCELED;
++        case PCMK_EXEC_TIMEOUT:         return ETIME;
++        case PCMK_EXEC_NOT_INSTALLED:   return ENOENT;
++        case PCMK_EXEC_NOT_SUPPORTED:   return EOPNOTSUPP;
++        case PCMK_EXEC_NOT_CONNECTED:   return ENOTCONN;
++        case PCMK_EXEC_NO_FENCE_DEVICE: return ENODEV;
++        case PCMK_EXEC_NO_SECRETS:      return EACCES;
++
++        /* For the fencing API, PCMK_EXEC_INVALID is used with fencer API
++         * operations that don't involve executing an agent (for example,
++         * registering devices). This allows us to use the CRM_EX_* codes in the
++         * exit status for finer-grained responses.
++         */
++        case PCMK_EXEC_INVALID:
++            switch (result->exit_status) {
++                case CRM_EX_INSUFFICIENT_PRIV:  return EACCES;
++                case CRM_EX_PROTOCOL:           return EPROTO;
++
++               /* CRM_EX_EXPIRED is used for orphaned fencing operations left
++                * over from a previous instance of the fencer. For API backward
++                * compatibility, this is mapped to the previously used code for
++                * this case, EHOSTUNREACH.
++                */
++                case CRM_EX_EXPIRED:            return EHOSTUNREACH;
++                default:                        break;
++            }
++
++        default:
++            break;
++    }
++
++    // Try to provide useful error code based on result's error output
++
++    if (result->action_stderr == NULL) {
++        return ENODATA;
++
++    } else if (strcasestr(result->action_stderr, "timed out")
++               || strcasestr(result->action_stderr, "timeout")) {
++        return ETIME;
++
++    } else if (strcasestr(result->action_stderr, "unrecognised action")
++               || strcasestr(result->action_stderr, "unrecognized action")
++               || strcasestr(result->action_stderr, "unsupported action")) {
++        return EOPNOTSUPP;
++    }
++
++    // Oh well, we tried
++    return pcmk_rc_error;
++}
++
++static void
++stonith_action_async_done(svc_action_t *svc_action)
++{
++    stonith_action_t *action = (stonith_action_t *) svc_action->cb_data;
++
++    set_result_from_svc_action(action, svc_action);
++
++    svc_action->params = NULL;
++
++    crm_debug("Child process %d performing action '%s' exited with rc %d",
++                action->pid, action->action, svc_action->rc);
++
++    log_action(action, action->pid);
++
++    if (!pcmk__result_ok(&(action->result))
++        && update_remaining_timeout(action)) {
++
++        int rc = internal_stonith_action_execute(action);
++        if (rc == pcmk_ok) {
++            return;
++        }
++    }
++
++    if (action->done_cb) {
++        action->done_cb(action->pid, &(action->result), action->userdata);
++    }
++
++    action->svc_action = NULL; // don't remove our caller
++    stonith__destroy_action(action);
++}
++
++static void
++stonith_action_async_forked(svc_action_t *svc_action)
++{
++    stonith_action_t *action = (stonith_action_t *) svc_action->cb_data;
++
++    action->pid = svc_action->pid;
++    action->svc_action = svc_action;
++
++    if (action->fork_cb) {
++        (action->fork_cb) (svc_action->pid, action->userdata);
++    }
++
++    crm_trace("Child process %d performing action '%s' successfully forked",
++              action->pid, action->action);
++}
++
++static int
++internal_stonith_action_execute(stonith_action_t * action)
++{
++    int rc = -EPROTO;
++    int is_retry = 0;
++    svc_action_t *svc_action = NULL;
++    static int stonith_sequence = 0;
++    char *buffer = NULL;
++
++    CRM_CHECK(action != NULL, return -EINVAL);
++
++    if ((action->action == NULL) || (action->args == NULL)
++        || (action->agent == NULL)) {
++        pcmk__set_result(&(action->result), PCMK_OCF_UNKNOWN_ERROR,
++                         PCMK_EXEC_ERROR_FATAL, "Bug in fencing library");
++        return -EINVAL;
++    }
++
++    if (!action->tries) {
++        action->initial_start_time = time(NULL);
++    }
++    action->tries++;
++
++    if (action->tries > 1) {
++        crm_info("Attempt %d to execute %s (%s). remaining timeout is %d",
++                 action->tries, action->agent, action->action, action->remaining_timeout);
++        is_retry = 1;
++    }
++
++    buffer = crm_strdup_printf(PCMK__FENCE_BINDIR "/%s",
++                               basename(action->agent));
++    svc_action = services_action_create_generic(buffer, NULL);
++    free(buffer);
++
++    if (svc_action->rc != PCMK_OCF_UNKNOWN) {
++        set_result_from_svc_action(action, svc_action);
++        services_action_free(svc_action);
++        return -E2BIG;
++    }
++
++    svc_action->timeout = 1000 * action->remaining_timeout;
++    svc_action->standard = strdup(PCMK_RESOURCE_CLASS_STONITH);
++    svc_action->id = crm_strdup_printf("%s_%s_%d", basename(action->agent),
++                                       action->action, action->tries);
++    svc_action->agent = strdup(action->agent);
++    svc_action->sequence = stonith_sequence++;
++    svc_action->params = action->args;
++    svc_action->cb_data = (void *) action;
++    svc_action->flags = pcmk__set_flags_as(__func__, __LINE__,
++                                           LOG_TRACE, "Action",
++                                           svc_action->id, svc_action->flags,
++                                           SVC_ACTION_NON_BLOCKED,
++                                           "SVC_ACTION_NON_BLOCKED");
++
++    /* keep retries from executing out of control and free previous results */
++    if (is_retry) {
++        pcmk__reset_result(&(action->result));
++        sleep(1);
++    }
++
++    if (action->async) {
++        /* async */
++        if (services_action_async_fork_notify(svc_action,
++                                              &stonith_action_async_done,
++                                              &stonith_action_async_forked)) {
++            pcmk__set_result(&(action->result), PCMK_OCF_UNKNOWN,
++                             PCMK_EXEC_PENDING, NULL);
++            return pcmk_ok;
++        }
++
++    } else if (services_action_sync(svc_action)) { // sync success
++        rc = pcmk_ok;
++
++    } else { // sync failure
++        rc = -ECONNABORTED;
++    }
++
++    set_result_from_svc_action(action, svc_action);
++    svc_action->params = NULL;
++    services_action_free(svc_action);
++    return rc;
++}
++
++/*!
++ * \internal
++ * \brief Kick off execution of an async stonith action
++ *
++ * \param[in,out] action        Action to be executed
++ * \param[in,out] userdata      Datapointer to be passed to callbacks
++ * \param[in]     done          Callback to notify action has failed/succeeded
++ * \param[in]     fork_callback Callback to notify successful fork of child
++ *
++ * \return pcmk_ok if ownership of action has been taken, -errno otherwise
++ */
++int
++stonith_action_execute_async(stonith_action_t * action,
++                             void *userdata,
++                             void (*done) (int pid,
++                                           const pcmk__action_result_t *result,
++                                           void *user_data),
++                             void (*fork_cb) (int pid, void *user_data))
++{
++    if (!action) {
++        return -EINVAL;
++    }
++
++    action->userdata = userdata;
++    action->done_cb = done;
++    action->fork_cb = fork_cb;
++    action->async = 1;
++
++    return internal_stonith_action_execute(action);
++}
++
++/*!
++ * \internal
++ * \brief Execute a stonith action
++ *
++ * \param[in,out] action  Action to execute
++ *
++ * \return pcmk_ok on success, -errno otherwise
++ */
++int
++stonith__execute(stonith_action_t *action)
++{
++    int rc = pcmk_ok;
++
++    CRM_CHECK(action != NULL, return -EINVAL);
++
++    // Keep trying until success, max retries, or timeout
++    do {
++        rc = internal_stonith_action_execute(action);
++    } while ((rc != pcmk_ok) && update_remaining_timeout(action));
++
++    return rc;
++}
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index 93513e9f3..944cd1863 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -8,28 +8,20 @@
+  */
+ 
+ #include <crm_internal.h>
+-#include <unistd.h>
++
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <stdbool.h>
+ #include <string.h>
+ #include <ctype.h>
+-#include <libgen.h>
+ #include <inttypes.h>
+-
+-#include <sys/stat.h>
+ #include <sys/types.h>
+-#include <sys/wait.h>
+-
+ #include <glib.h>
+ 
+ #include <crm/crm.h>
+ #include <crm/stonith-ng.h>
+ #include <crm/fencing/internal.h>
+ #include <crm/msg_xml.h>
+-#include <crm/common/xml.h>
+-#include <crm/common/xml_internal.h>
+-#include <crm/services_internal.h>
+ 
+ #include <crm/common/mainloop.h>
+ 
+@@ -37,31 +29,6 @@
+ 
+ CRM_TRACE_INIT_DATA(stonith);
+ 
+-struct stonith_action_s {
+-    /*! user defined data */
+-    char *agent;
+-    char *action;
+-    char *victim;
+-    GHashTable *args;
+-    int timeout;
+-    int async;
+-    void *userdata;
+-    void (*done_cb) (int pid, const pcmk__action_result_t *result,
+-                     void *user_data);
+-    void (*fork_cb) (int pid, void *user_data);
+-
+-    svc_action_t *svc_action;
+-
+-    /*! internal timing information */
+-    time_t initial_start_time;
+-    int tries;
+-    int remaining_timeout;
+-    int max_retries;
+-
+-    int pid;
+-    pcmk__action_result_t result;
+-};
+-
+ typedef struct stonith_private_s {
+     char *token;
+     crm_ipc_t *ipc;
+@@ -118,8 +85,6 @@ static int stonith_send_command(stonith_t *stonith, const char *op,
+ 
+ static void stonith_connection_destroy(gpointer user_data);
+ static void stonith_send_notification(gpointer data, gpointer user_data);
+-static int internal_stonith_action_execute(stonith_action_t * action);
+-static void log_action(stonith_action_t *action, pid_t pid);
+ 
+ /*!
+  * \brief Get agent namespace by name
+@@ -196,23 +161,6 @@ stonith_get_namespace(const char *agent, const char *namespace_s)
+     return st_namespace_invalid;
+ }
+ 
+-/*!
+- * \internal
+- * \brief Set an action's result based on services library result
+- *
+- * \param[in] action      Fence action to set result for
+- * \param[in] svc_action  Service action to get result from
+- */
+-static void
+-set_result_from_svc_action(stonith_action_t *action, svc_action_t *svc_action)
+-{
+-    pcmk__set_result(&(action->result), svc_action->rc, svc_action->status,
+-                     services__exit_reason(svc_action));
+-    pcmk__set_result_output(&(action->result),
+-                            services__grab_stdout(svc_action),
+-                            services__grab_stderr(svc_action));
+-}
+-
+ gboolean
+ stonith__watchdog_fencing_enabled_for_node_api(stonith_t *st, const char *node)
+ {
+@@ -273,21 +221,6 @@ stonith__watchdog_fencing_enabled_for_node(const char *node)
+     return stonith__watchdog_fencing_enabled_for_node_api(NULL, node);
+ }
+ 
+-static void
+-log_action(stonith_action_t *action, pid_t pid)
+-{
+-    /* The services library has already logged the output at info or debug
+-     * level, so just raise to warning for stderr.
+-     */
+-    if (action->result.action_stderr != NULL) {
+-        /* Logging the whole string confuses syslog when the string is xml */
+-        char *prefix = crm_strdup_printf("%s[%d] stderr:", action->agent, pid);
+-
+-        crm_log_output(LOG_WARNING, prefix, action->result.action_stderr);
+-        free(prefix);
+-    }
+-}
+-
+ /* when cycling through the list we don't want to delete items
+    so just mark them and when we know nobody is using the list
+    loop over it to remove the marked items
+@@ -530,465 +463,6 @@ stonith_api_register_level(stonith_t * st, int options, const char *node, int le
+                                            level, device_list);
+ }
+ 
+-static void
+-append_config_arg(gpointer key, gpointer value, gpointer user_data)
+-{
+-    /* The fencer will filter "action" out when it registers the device,
+-     * but ignore it here in case any external API users don't.
+-     *
+-     * Also filter out parameters handled directly by Pacemaker.
+-     */
+-    if (!pcmk__str_eq(key, STONITH_ATTR_ACTION_OP, pcmk__str_casei)
+-        && !pcmk_stonith_param(key)
+-        && (strstr(key, CRM_META) == NULL)
+-        && !pcmk__str_eq(key, "crm_feature_set", pcmk__str_casei)) {
+-
+-        crm_trace("Passing %s=%s with fence action",
+-                  (const char *) key, (const char *) (value? value : ""));
+-        g_hash_table_insert((GHashTable *) user_data,
+-                            strdup(key), strdup(value? value : ""));
+-    }
+-}
+-
+-static GHashTable *
+-make_args(const char *agent, const char *action, const char *victim,
+-          uint32_t victim_nodeid, GHashTable * device_args,
+-          GHashTable * port_map, const char *host_arg)
+-{
+-    GHashTable *arg_list = NULL;
+-    const char *value = NULL;
+-
+-    CRM_CHECK(action != NULL, return NULL);
+-
+-    arg_list = pcmk__strkey_table(free, free);
+-
+-    // Add action to arguments (using an alias if requested)
+-    if (device_args) {
+-        char buffer[512];
+-
+-        snprintf(buffer, sizeof(buffer), "pcmk_%s_action", action);
+-        value = g_hash_table_lookup(device_args, buffer);
+-        if (value) {
+-            crm_debug("Substituting '%s' for fence action %s targeting %s",
+-                      value, action, victim);
+-            action = value;
+-        }
+-    }
+-    g_hash_table_insert(arg_list, strdup(STONITH_ATTR_ACTION_OP),
+-                        strdup(action));
+-
+-    /* If this is a fencing operation against another node, add more standard
+-     * arguments.
+-     */
+-    if (victim && device_args) {
+-        const char *param = NULL;
+-
+-        /* Always pass the target's name, per
+-         * https://github.com/ClusterLabs/fence-agents/blob/master/doc/FenceAgentAPI.md
+-         */
+-        g_hash_table_insert(arg_list, strdup("nodename"), strdup(victim));
+-
+-        // If the target's node ID was specified, pass it, too
+-        if (victim_nodeid) {
+-            char *nodeid = crm_strdup_printf("%" PRIu32, victim_nodeid);
+-
+-            // cts-fencing looks for this log message
+-            crm_info("Passing '%s' as nodeid with fence action '%s' targeting %s",
+-                     nodeid, action, victim);
+-            g_hash_table_insert(arg_list, strdup("nodeid"), nodeid);
+-        }
+-
+-        // Check whether target must be specified in some other way
+-        param = g_hash_table_lookup(device_args, PCMK_STONITH_HOST_ARGUMENT);
+-        if (!pcmk__str_eq(agent, "fence_legacy", pcmk__str_none)
+-            && !pcmk__str_eq(param, "none", pcmk__str_casei)) {
+-
+-            if (param == NULL) {
+-                /* Use the caller's default for pcmk_host_argument, or "port" if
+-                 * none was given
+-                 */
+-                param = (host_arg == NULL)? "port" : host_arg;
+-            }
+-            value = g_hash_table_lookup(device_args, param);
+-
+-            if (pcmk__str_eq(value, "dynamic",
+-                             pcmk__str_casei|pcmk__str_null_matches)) {
+-                /* If the host argument was "dynamic" or not explicitly specified,
+-                 * add it with the target
+-                 */
+-                const char *alias = NULL;
+-
+-                if (port_map) {
+-                    alias = g_hash_table_lookup(port_map, victim);
+-                }
+-                if (alias == NULL) {
+-                    alias = victim;
+-                }
+-                crm_debug("Passing %s='%s' with fence action %s targeting %s",
+-                          param, alias, action, victim);
+-                g_hash_table_insert(arg_list, strdup(param), strdup(alias));
+-            }
+-        }
+-    }
+-
+-    if (device_args) {
+-        g_hash_table_foreach(device_args, append_config_arg, arg_list);
+-    }
+-
+-    return arg_list;
+-}
+-
+-/*!
+- * \internal
+- * \brief Free all memory used by a stonith action
+- *
+- * \param[in,out] action  Action to free
+- */
+-void
+-stonith__destroy_action(stonith_action_t *action)
+-{
+-    if (action) {
+-        free(action->agent);
+-        if (action->args) {
+-            g_hash_table_destroy(action->args);
+-        }
+-        free(action->action);
+-        free(action->victim);
+-        if (action->svc_action) {
+-            services_action_free(action->svc_action);
+-        }
+-        pcmk__reset_result(&(action->result));
+-        free(action);
+-    }
+-}
+-
+-/*!
+- * \internal
+- * \brief Get the result of an executed stonith action
+- *
+- * \param[in] action  Executed action
+- *
+- * \return Pointer to action's result (or NULL if \p action is NULL)
+- */
+-pcmk__action_result_t *
+-stonith__action_result(stonith_action_t *action)
+-{
+-    return (action == NULL)? NULL : &(action->result);
+-}
+-
+-#define FAILURE_MAX_RETRIES 2
+-stonith_action_t *
+-stonith_action_create(const char *agent,
+-                      const char *_action,
+-                      const char *victim,
+-                      uint32_t victim_nodeid,
+-                      int timeout, GHashTable * device_args,
+-                      GHashTable * port_map, const char *host_arg)
+-{
+-    stonith_action_t *action;
+-
+-    action = calloc(1, sizeof(stonith_action_t));
+-    action->args = make_args(agent, _action, victim, victim_nodeid,
+-                             device_args, port_map, host_arg);
+-    crm_debug("Preparing '%s' action for %s using agent %s",
+-              _action, (victim? victim : "no target"), agent);
+-    action->agent = strdup(agent);
+-    action->action = strdup(_action);
+-    if (victim) {
+-        action->victim = strdup(victim);
+-    }
+-    action->timeout = action->remaining_timeout = timeout;
+-    action->max_retries = FAILURE_MAX_RETRIES;
+-
+-    pcmk__set_result(&(action->result), PCMK_OCF_UNKNOWN, PCMK_EXEC_UNKNOWN,
+-                     "Initialization bug in fencing library");
+-
+-    if (device_args) {
+-        char buffer[512];
+-        const char *value = NULL;
+-
+-        snprintf(buffer, sizeof(buffer), "pcmk_%s_retries", _action);
+-        value = g_hash_table_lookup(device_args, buffer);
+-
+-        if (value) {
+-            action->max_retries = atoi(value);
+-        }
+-    }
+-
+-    return action;
+-}
+-
+-static gboolean
+-update_remaining_timeout(stonith_action_t * action)
+-{
+-    int diff = time(NULL) - action->initial_start_time;
+-
+-    if (action->tries >= action->max_retries) {
+-        crm_info("Attempted to execute agent %s (%s) the maximum number of times (%d) allowed",
+-                 action->agent, action->action, action->max_retries);
+-        action->remaining_timeout = 0;
+-    } else if ((action->result.execution_status != PCMK_EXEC_TIMEOUT)
+-               && (diff < (action->timeout * 0.7))) {
+-        /* only set remaining timeout period if there is 30%
+-         * or greater of the original timeout period left */
+-        action->remaining_timeout = action->timeout - diff;
+-    } else {
+-        action->remaining_timeout = 0;
+-    }
+-    return action->remaining_timeout ? TRUE : FALSE;
+-}
+-
+-/*!
+- * \internal
+- * \brief Map a fencing action result to a standard return code
+- *
+- * \param[in] result  Fencing action result to map
+- *
+- * \return Standard Pacemaker return code that best corresponds to \p result
+- */
+-int
+-stonith__result2rc(const pcmk__action_result_t *result)
+-{
+-    if (pcmk__result_ok(result)) {
+-        return pcmk_rc_ok;
+-    }
+-
+-    switch (result->execution_status) {
+-        case PCMK_EXEC_PENDING:         return EINPROGRESS;
+-        case PCMK_EXEC_CANCELLED:       return ECANCELED;
+-        case PCMK_EXEC_TIMEOUT:         return ETIME;
+-        case PCMK_EXEC_NOT_INSTALLED:   return ENOENT;
+-        case PCMK_EXEC_NOT_SUPPORTED:   return EOPNOTSUPP;
+-        case PCMK_EXEC_NOT_CONNECTED:   return ENOTCONN;
+-        case PCMK_EXEC_NO_FENCE_DEVICE: return ENODEV;
+-        case PCMK_EXEC_NO_SECRETS:      return EACCES;
+-
+-        /* For the fencing API, PCMK_EXEC_INVALID is used with fencer API
+-         * operations that don't involve executing an agent (for example,
+-         * registering devices). This allows us to use the CRM_EX_* codes in the
+-         * exit status for finer-grained responses.
+-         */
+-        case PCMK_EXEC_INVALID:
+-            switch (result->exit_status) {
+-                case CRM_EX_INSUFFICIENT_PRIV:  return EACCES;
+-                case CRM_EX_PROTOCOL:           return EPROTO;
+-
+-               /* CRM_EX_EXPIRED is used for orphaned fencing operations left
+-                * over from a previous instance of the fencer. For API backward
+-                * compatibility, this is mapped to the previously used code for
+-                * this case, EHOSTUNREACH.
+-                */
+-                case CRM_EX_EXPIRED:            return EHOSTUNREACH;
+-                default:                        break;
+-            }
+-
+-        default:
+-            break;
+-    }
+-
+-    // Try to provide useful error code based on result's error output
+-
+-    if (result->action_stderr == NULL) {
+-        return ENODATA;
+-
+-    } else if (strcasestr(result->action_stderr, "timed out")
+-               || strcasestr(result->action_stderr, "timeout")) {
+-        return ETIME;
+-
+-    } else if (strcasestr(result->action_stderr, "unrecognised action")
+-               || strcasestr(result->action_stderr, "unrecognized action")
+-               || strcasestr(result->action_stderr, "unsupported action")) {
+-        return EOPNOTSUPP;
+-    }
+-
+-    // Oh well, we tried
+-    return pcmk_rc_error;
+-}
+-
+-static void
+-stonith_action_async_done(svc_action_t *svc_action)
+-{
+-    stonith_action_t *action = (stonith_action_t *) svc_action->cb_data;
+-
+-    set_result_from_svc_action(action, svc_action);
+-
+-    svc_action->params = NULL;
+-
+-    crm_debug("Child process %d performing action '%s' exited with rc %d",
+-                action->pid, action->action, svc_action->rc);
+-
+-    log_action(action, action->pid);
+-
+-    if (!pcmk__result_ok(&(action->result))
+-        && update_remaining_timeout(action)) {
+-
+-        int rc = internal_stonith_action_execute(action);
+-        if (rc == pcmk_ok) {
+-            return;
+-        }
+-    }
+-
+-    if (action->done_cb) {
+-        action->done_cb(action->pid, &(action->result), action->userdata);
+-    }
+-
+-    action->svc_action = NULL; // don't remove our caller
+-    stonith__destroy_action(action);
+-}
+-
+-static void
+-stonith_action_async_forked(svc_action_t *svc_action)
+-{
+-    stonith_action_t *action = (stonith_action_t *) svc_action->cb_data;
+-
+-    action->pid = svc_action->pid;
+-    action->svc_action = svc_action;
+-
+-    if (action->fork_cb) {
+-        (action->fork_cb) (svc_action->pid, action->userdata);
+-    }
+-
+-    crm_trace("Child process %d performing action '%s' successfully forked",
+-              action->pid, action->action);
+-}
+-
+-static int
+-internal_stonith_action_execute(stonith_action_t * action)
+-{
+-    int rc = -EPROTO;
+-    int is_retry = 0;
+-    svc_action_t *svc_action = NULL;
+-    static int stonith_sequence = 0;
+-    char *buffer = NULL;
+-
+-    CRM_CHECK(action != NULL, return -EINVAL);
+-
+-    if ((action->action == NULL) || (action->args == NULL)
+-        || (action->agent == NULL)) {
+-        pcmk__set_result(&(action->result), PCMK_OCF_UNKNOWN_ERROR,
+-                         PCMK_EXEC_ERROR_FATAL, "Bug in fencing library");
+-        return -EINVAL;
+-    }
+-
+-    if (!action->tries) {
+-        action->initial_start_time = time(NULL);
+-    }
+-    action->tries++;
+-
+-    if (action->tries > 1) {
+-        crm_info("Attempt %d to execute %s (%s). remaining timeout is %d",
+-                 action->tries, action->agent, action->action, action->remaining_timeout);
+-        is_retry = 1;
+-    }
+-
+-    buffer = crm_strdup_printf(PCMK__FENCE_BINDIR "/%s",
+-                               basename(action->agent));
+-    svc_action = services_action_create_generic(buffer, NULL);
+-    free(buffer);
+-
+-    if (svc_action->rc != PCMK_OCF_UNKNOWN) {
+-        set_result_from_svc_action(action, svc_action);
+-        services_action_free(svc_action);
+-        return -E2BIG;
+-    }
+-
+-    svc_action->timeout = 1000 * action->remaining_timeout;
+-    svc_action->standard = strdup(PCMK_RESOURCE_CLASS_STONITH);
+-    svc_action->id = crm_strdup_printf("%s_%s_%d", basename(action->agent),
+-                                       action->action, action->tries);
+-    svc_action->agent = strdup(action->agent);
+-    svc_action->sequence = stonith_sequence++;
+-    svc_action->params = action->args;
+-    svc_action->cb_data = (void *) action;
+-    svc_action->flags = pcmk__set_flags_as(__func__, __LINE__,
+-                                           LOG_TRACE, "Action",
+-                                           svc_action->id, svc_action->flags,
+-                                           SVC_ACTION_NON_BLOCKED,
+-                                           "SVC_ACTION_NON_BLOCKED");
+-
+-    /* keep retries from executing out of control and free previous results */
+-    if (is_retry) {
+-        pcmk__reset_result(&(action->result));
+-        sleep(1);
+-    }
+-
+-    if (action->async) {
+-        /* async */
+-        if (services_action_async_fork_notify(svc_action,
+-                                              &stonith_action_async_done,
+-                                              &stonith_action_async_forked)) {
+-            pcmk__set_result(&(action->result), PCMK_OCF_UNKNOWN,
+-                             PCMK_EXEC_PENDING, NULL);
+-            return pcmk_ok;
+-        }
+-
+-    } else if (services_action_sync(svc_action)) { // sync success
+-        rc = pcmk_ok;
+-
+-    } else { // sync failure
+-        rc = -ECONNABORTED;
+-    }
+-
+-    set_result_from_svc_action(action, svc_action);
+-    svc_action->params = NULL;
+-    services_action_free(svc_action);
+-    return rc;
+-}
+-
+-/*!
+- * \internal
+- * \brief Kick off execution of an async stonith action
+- *
+- * \param[in,out] action        Action to be executed
+- * \param[in,out] userdata      Datapointer to be passed to callbacks
+- * \param[in]     done          Callback to notify action has failed/succeeded
+- * \param[in]     fork_callback Callback to notify successful fork of child
+- *
+- * \return pcmk_ok if ownership of action has been taken, -errno otherwise
+- */
+-int
+-stonith_action_execute_async(stonith_action_t * action,
+-                             void *userdata,
+-                             void (*done) (int pid,
+-                                           const pcmk__action_result_t *result,
+-                                           void *user_data),
+-                             void (*fork_cb) (int pid, void *user_data))
+-{
+-    if (!action) {
+-        return -EINVAL;
+-    }
+-
+-    action->userdata = userdata;
+-    action->done_cb = done;
+-    action->fork_cb = fork_cb;
+-    action->async = 1;
+-
+-    return internal_stonith_action_execute(action);
+-}
+-
+-/*!
+- * \internal
+- * \brief Execute a stonith action
+- *
+- * \param[in,out] action  Action to execute
+- *
+- * \return pcmk_ok on success, -errno otherwise
+- */
+-int
+-stonith__execute(stonith_action_t *action)
+-{
+-    int rc = pcmk_ok;
+-
+-    CRM_CHECK(action != NULL, return -EINVAL);
+-
+-    // Keep trying until success, max retries, or timeout
+-    do {
+-        rc = internal_stonith_action_execute(action);
+-    } while ((rc != pcmk_ok) && update_remaining_timeout(action));
+-
+-    return rc;
+-}
+-
+ static int
+ stonith_api_device_list(stonith_t * stonith, int call_options, const char *namespace,
+                         stonith_key_value_t ** devices, int timeout)
+-- 
+2.27.0
+
+
+From 883a3cf7d3f73d02417d3997a7885dd5a7bebac7 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Wed, 10 Nov 2021 15:39:17 -0600
+Subject: [PATCH 05/13] Low: fencing,executor: improve mapping of legacy return
+ code to execution status
+
+Move stonith_rc2status() from the executor to the fencing library for future
+reuse, exposing it internally as stonith__legacy2status(). Update it to use
+recently added execution status codes.
+---
+ daemons/execd/execd_commands.c | 66 ++++++++--------------------------
+ include/crm/fencing/internal.h |  2 ++
+ lib/fencing/st_actions.c       | 36 +++++++++++++++++++
+ 3 files changed, 52 insertions(+), 52 deletions(-)
+
+diff --git a/daemons/execd/execd_commands.c b/daemons/execd/execd_commands.c
+index 02070bf11..0ccaa1ced 100644
+--- a/daemons/execd/execd_commands.c
++++ b/daemons/execd/execd_commands.c
+@@ -21,6 +21,7 @@
+ #include <unistd.h>
+ 
+ #include <crm/crm.h>
++#include <crm/fencing/internal.h>
+ #include <crm/services.h>
+ #include <crm/services_internal.h>
+ #include <crm/common/mainloop.h>
+@@ -999,56 +1000,6 @@ action_complete(svc_action_t * action)
+     cmd_finalize(cmd, rsc);
+ }
+ 
+-/*!
+- * \internal
+- * \brief Determine operation status of a stonith operation
+- *
+- * Non-stonith resource operations get their operation status directly from the
+- * service library, but the fencer does not have an equivalent, so we must infer
+- * an operation status from the fencer API's return code.
+- *
+- * \param[in] action       Name of action performed on stonith resource
+- * \param[in] interval_ms  Action interval
+- * \param[in] rc           Action result from fencer
+- *
+- * \return Operation status corresponding to fencer API return code
+- */
+-static int
+-stonith_rc2status(const char *action, guint interval_ms, int rc)
+-{
+-    int status = PCMK_EXEC_DONE;
+-
+-    switch (rc) {
+-        case pcmk_ok:
+-            break;
+-
+-        case -EOPNOTSUPP:
+-        case -EPROTONOSUPPORT:
+-            status = PCMK_EXEC_NOT_SUPPORTED;
+-            break;
+-
+-        case -ETIME:
+-        case -ETIMEDOUT:
+-            status = PCMK_EXEC_TIMEOUT;
+-            break;
+-
+-        case -ENOTCONN:
+-        case -ECOMM:
+-            // Couldn't talk to fencer
+-            status = PCMK_EXEC_ERROR;
+-            break;
+-
+-        case -ENODEV:
+-            // The device is not registered with the fencer
+-            status = PCMK_EXEC_ERROR;
+-            break;
+-
+-        default:
+-            break;
+-    }
+-    return status;
+-}
+-
+ static void
+ stonith_action_complete(lrmd_cmd_t * cmd, int rc)
+ {
+@@ -1062,8 +1013,19 @@ stonith_action_complete(lrmd_cmd_t * cmd, int rc)
+      * the fencer return code.
+      */
+     if (cmd->result.execution_status != PCMK_EXEC_CANCELLED) {
+-        cmd->result.execution_status = stonith_rc2status(cmd->action,
+-                                                         cmd->interval_ms, rc);
++        cmd->result.execution_status = stonith__legacy2status(rc);
++
++        // Simplify status codes from fencer
++        switch (cmd->result.execution_status) {
++            case PCMK_EXEC_NOT_CONNECTED:
++            case PCMK_EXEC_INVALID:
++            case PCMK_EXEC_NO_FENCE_DEVICE:
++            case PCMK_EXEC_NO_SECRETS:
++                cmd->result.execution_status = PCMK_EXEC_ERROR;
++                break;
++            default:
++                break;
++        }
+ 
+         // Certain successful actions change the known state of the resource
+         if ((rsc != NULL) && pcmk__result_ok(&(cmd->result))) {
+diff --git a/include/crm/fencing/internal.h b/include/crm/fencing/internal.h
+index 6a7e4232c..80f6443be 100644
+--- a/include/crm/fencing/internal.h
++++ b/include/crm/fencing/internal.h
+@@ -182,6 +182,8 @@ bool stonith__event_state_pending(stonith_history_t *history, void *user_data);
+ bool stonith__event_state_eq(stonith_history_t *history, void *user_data);
+ bool stonith__event_state_neq(stonith_history_t *history, void *user_data);
+ 
++int stonith__legacy2status(int rc);
++
+ /*!
+  * \internal
+  * \brief Is a fencing operation in pending state?
+diff --git a/lib/fencing/st_actions.c b/lib/fencing/st_actions.c
+index 64d3afd5d..9e785595a 100644
+--- a/lib/fencing/st_actions.c
++++ b/lib/fencing/st_actions.c
+@@ -360,6 +360,42 @@ stonith__result2rc(const pcmk__action_result_t *result)
+     return pcmk_rc_error;
+ }
+ 
++/*!
++ * \internal
++ * \brief Determine execution status equivalent of legacy fencer return code
++ *
++ * Fence action notifications, and fence action callbacks from older fencers
++ * (<=2.1.2) in a rolling upgrade, will have only a legacy return code. Map this
++ * to an execution status as best as possible (essentially, the inverse of
++ * stonith__result2rc()).
++ *
++ * \param[in] rc           Legacy return code from fencer
++ *
++ * \return Execution status best corresponding to \p rc
++ */
++int
++stonith__legacy2status(int rc)
++{
++    if (rc >= 0) {
++        return PCMK_EXEC_DONE;
++    }
++    switch (-rc) {
++        case EACCES:            return PCMK_EXEC_NO_SECRETS;
++        case ECANCELED:         return PCMK_EXEC_CANCELLED;
++        case EHOSTUNREACH:      return PCMK_EXEC_INVALID;
++        case EINPROGRESS:       return PCMK_EXEC_PENDING;
++        case ENODEV:            return PCMK_EXEC_NO_FENCE_DEVICE;
++        case ENOENT:            return PCMK_EXEC_NOT_INSTALLED;
++        case ENOTCONN:          return PCMK_EXEC_NOT_CONNECTED;
++        case EOPNOTSUPP:        return PCMK_EXEC_NOT_SUPPORTED;
++        case EPROTO:            return PCMK_EXEC_INVALID;
++        case EPROTONOSUPPORT:   return PCMK_EXEC_NOT_SUPPORTED;
++        case ETIME:             return PCMK_EXEC_TIMEOUT;
++        case ETIMEDOUT:         return PCMK_EXEC_TIMEOUT;
++        default:                return PCMK_EXEC_ERROR;
++    }
++}
++
+ static void
+ stonith_action_async_done(svc_action_t *svc_action)
+ {
+-- 
+2.27.0
+
+
+From 639a9f4a2cbeb6cc41b754a1dcb1f360a9500e03 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Thu, 11 Nov 2021 16:54:32 -0600
+Subject: [PATCH 06/13] Refactor: fencing: add functions for getting/setting
+ result via XML
+
+These will come in handy as we update the various fencer messages to include a
+full result rather than just a legacy return code. The functions are in a new
+source file fenced_messages.c which can have other stuff moved to it later.
+---
+ include/crm/fencing/internal.h |   3 +
+ lib/fencing/st_actions.c       | 107 +++++++++++++++++++++++++++++++++
+ 2 files changed, 110 insertions(+)
+
+diff --git a/include/crm/fencing/internal.h b/include/crm/fencing/internal.h
+index 80f6443be..4b5fd3959 100644
+--- a/include/crm/fencing/internal.h
++++ b/include/crm/fencing/internal.h
+@@ -60,6 +60,9 @@ stonith_action_t *stonith_action_create(const char *agent,
+ void stonith__destroy_action(stonith_action_t *action);
+ pcmk__action_result_t *stonith__action_result(stonith_action_t *action);
+ int stonith__result2rc(const pcmk__action_result_t *result);
++void stonith__xe_set_result(xmlNode *xml, const pcmk__action_result_t *result);
++void stonith__xe_get_result(xmlNode *xml, pcmk__action_result_t *result);
++xmlNode *stonith__find_xe_with_result(xmlNode *xml);
+ 
+ int
+ stonith_action_execute_async(stonith_action_t * action,
+diff --git a/lib/fencing/st_actions.c b/lib/fencing/st_actions.c
+index 9e785595a..d4fc3f5ed 100644
+--- a/lib/fencing/st_actions.c
++++ b/lib/fencing/st_actions.c
+@@ -396,6 +396,113 @@ stonith__legacy2status(int rc)
+     }
+ }
+ 
++/*!
++ * \internal
++ * \brief Add a fencing result to an XML element as attributes
++ *
++ * \param[in] xml     XML element to add result to
++ * \param[in] result  Fencing result to add (assume success if NULL)
++ */
++void
++stonith__xe_set_result(xmlNode *xml, const pcmk__action_result_t *result)
++{
++    int exit_status = CRM_EX_OK;
++    enum pcmk_exec_status execution_status = PCMK_EXEC_DONE;
++    const char *exit_reason = NULL;
++    const char *action_stdout = NULL;
++    int rc = pcmk_ok;
++
++    CRM_CHECK(xml != NULL, return);
++
++    if (result != NULL) {
++        exit_status = result->exit_status;
++        execution_status = result->execution_status;
++        exit_reason = result->exit_reason;
++        action_stdout = result->action_stdout;
++        rc = pcmk_rc2legacy(stonith__result2rc(result));
++    }
++
++    crm_xml_add_int(xml, XML_LRM_ATTR_OPSTATUS, (int) execution_status);
++    crm_xml_add_int(xml, XML_LRM_ATTR_RC, exit_status);
++    crm_xml_add(xml, XML_LRM_ATTR_EXIT_REASON, exit_reason);
++    crm_xml_add(xml, "st_output", action_stdout);
++
++    /* @COMPAT Peers in rolling upgrades, Pacemaker Remote nodes, and external
++     * code that use libstonithd <=2.1.2 don't check for the full result, and
++     * need a legacy return code instead.
++     */
++    crm_xml_add_int(xml, F_STONITH_RC, rc);
++}
++
++/*!
++ * \internal
++ * \brief Find a fencing result beneath an XML element
++ *
++ * \param[in]  xml     XML element to search
++ *
++ * \return \p xml or descendent of it that contains a fencing result, else NULL
++ */
++xmlNode *
++stonith__find_xe_with_result(xmlNode *xml)
++{
++    xmlNode *match = get_xpath_object("//@" XML_LRM_ATTR_RC, xml, LOG_NEVER);
++
++    if (match == NULL) {
++        /* @COMPAT Peers <=2.1.2 in a rolling upgrade provide only a legacy
++         * return code, not a full result, so check for that.
++         */
++        match = get_xpath_object("//@" F_STONITH_RC, xml, LOG_ERR);
++    }
++    return match;
++}
++
++/*!
++ * \internal
++ * \brief Get a fencing result from an XML element's attributes
++ *
++ * \param[in]  xml     XML element with fencing result
++ * \param[out] result  Where to store fencing result
++ */
++void
++stonith__xe_get_result(xmlNode *xml, pcmk__action_result_t *result)
++{
++    int exit_status = CRM_EX_OK;
++    int execution_status = PCMK_EXEC_DONE;
++    const char *exit_reason = NULL;
++    char *action_stdout = NULL;
++
++    CRM_CHECK((xml != NULL) && (result != NULL), return);
++
++    exit_reason = crm_element_value(xml, XML_LRM_ATTR_EXIT_REASON);
++    action_stdout = crm_element_value_copy(xml, "st_output");
++
++    // A result must include an exit status and execution status
++    if ((crm_element_value_int(xml, XML_LRM_ATTR_RC, &exit_status) < 0)
++        || (crm_element_value_int(xml, XML_LRM_ATTR_OPSTATUS,
++                                  &execution_status) < 0)) {
++        int rc = pcmk_ok;
++        exit_status = CRM_EX_ERROR;
++
++        /* @COMPAT Peers <=2.1.2 in rolling upgrades provide only a legacy
++         * return code, not a full result, so check for that.
++         */
++        if (crm_element_value_int(xml, F_STONITH_RC, &rc) == 0) {
++            if ((rc == pcmk_ok) || (rc == -EINPROGRESS)) {
++                exit_status = CRM_EX_OK;
++            }
++            execution_status = stonith__legacy2status(rc);
++            exit_reason = pcmk_strerror(rc);
++
++        } else {
++            execution_status = PCMK_EXEC_ERROR;
++            exit_reason = "Fencer reply contained neither a full result "
++                          "nor a legacy return code (bug?)";
++        }
++    }
++    pcmk__set_result(result, exit_status, execution_status, exit_reason);
++    pcmk__set_result_output(result, action_stdout, NULL);
++}
++
+ static void
+ stonith_action_async_done(svc_action_t *svc_action)
+ {
+-- 
+2.27.0
+
+
+From 1f0121c6ad0d0235bcf01c8b60f9153592b3db83 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Thu, 11 Nov 2021 10:10:53 -0600
+Subject: [PATCH 07/13] Refactor: fencing: rename functions for invoking fence
+ callbacks
+
+... to make it clearer what the difference between them is
+---
+ lib/fencing/st_client.c | 44 +++++++++++++++++++++++++++++++++--------
+ 1 file changed, 36 insertions(+), 8 deletions(-)
+
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index 944cd1863..dfc5860fc 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -847,9 +847,21 @@ stonith_api_del_callback(stonith_t * stonith, int call_id, bool all_callbacks)
+     return pcmk_ok;
+ }
+ 
++/*!
++ * \internal
++ * \brief Invoke a (single) specified fence action callback
++ *
++ * \param[in] st        Fencer API connection
++ * \param[in] call_id   If positive, call ID of completed fence action, otherwise
++ *                      legacy return code for early action failure
++ * \param[in] rc        Legacy return code for action result
++ * \param[in] userdata  User data to pass to callback
++ * \param[in] callback  Fence action callback to invoke
++ */
+ static void
+-invoke_callback(stonith_t * st, int call_id, int rc, void *userdata,
+-                void (*callback) (stonith_t * st, stonith_callback_data_t * data))
++invoke_fence_action_callback(stonith_t *st, int call_id, int rc, void *userdata,
++                             void (*callback) (stonith_t *st,
++                                               stonith_callback_data_t *data))
+ {
+     stonith_callback_data_t data = { 0, };
+ 
+@@ -860,8 +872,21 @@ invoke_callback(stonith_t * st, int call_id, int rc, void *userdata,
+     callback(st, &data);
+ }
+ 
++/*!
++ * \internal
++ * \brief Invoke any callbacks registered for a specified fence action result
++ *
++ * Given a fence action result from the fencer, invoke any callback registered
++ * for that action, as well as any global callback registered.
++ *
++ * \param[in] st        Fencer API connection
++ * \param[in] msg       If non-NULL, fencer reply
++ * \param[in] call_id   If \p msg is NULL, call ID of action that timed out
++ * \param[in] rc        Legacy return code for result of action
++ */
+ static void
+-stonith_perform_callback(stonith_t * stonith, xmlNode * msg, int call_id, int rc)
++invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id,
++                            int rc)
+ {
+     stonith_private_t *private = NULL;
+     stonith_callback_client_t *blob = NULL;
+@@ -899,7 +924,8 @@ stonith_perform_callback(stonith_t * stonith, xmlNode * msg, int call_id, int rc
+ 
+     if (local_blob.callback != NULL && (rc == pcmk_ok || local_blob.only_success == FALSE)) {
+         crm_trace("Invoking callback %s for call %d", crm_str(local_blob.id), call_id);
+-        invoke_callback(stonith, call_id, rc, local_blob.user_data, local_blob.callback);
++        invoke_fence_action_callback(stonith, call_id, rc, local_blob.user_data,
++                                     local_blob.callback);
+ 
+     } else if (private->op_callback == NULL && rc != pcmk_ok) {
+         crm_warn("Fencing command failed: %s", pcmk_strerror(rc));
+@@ -908,7 +934,8 @@ stonith_perform_callback(stonith_t * stonith, xmlNode * msg, int call_id, int rc
+ 
+     if (private->op_callback != NULL) {
+         crm_trace("Invoking global callback for call %d", call_id);
+-        invoke_callback(stonith, call_id, rc, NULL, private->op_callback);
++        invoke_fence_action_callback(stonith, call_id, rc, NULL,
++                                     private->op_callback);
+     }
+     crm_trace("OP callback activated.");
+ }
+@@ -919,7 +946,7 @@ stonith_async_timeout_handler(gpointer data)
+     struct timer_rec_s *timer = data;
+ 
+     crm_err("Async call %d timed out after %dms", timer->call_id, timer->timeout);
+-    stonith_perform_callback(timer->stonith, NULL, timer->call_id, -ETIME);
++    invoke_registered_callbacks(timer->stonith, NULL, timer->call_id, -ETIME);
+ 
+     /* Always return TRUE, never remove the handler
+      * We do that in stonith_del_callback()
+@@ -994,7 +1021,7 @@ stonith_dispatch_internal(const char *buffer, ssize_t length, gpointer userdata)
+     crm_trace("Activating %s callbacks...", type);
+ 
+     if (pcmk__str_eq(type, T_STONITH_NG, pcmk__str_casei)) {
+-        stonith_perform_callback(st, blob.xml, 0, 0);
++        invoke_registered_callbacks(st, blob.xml, 0, 0);
+ 
+     } else if (pcmk__str_eq(type, T_STONITH_NOTIFY, pcmk__str_casei)) {
+         foreach_notify_entry(private, stonith_send_notification, &blob);
+@@ -1229,7 +1256,8 @@ stonith_api_add_callback(stonith_t * stonith, int call_id, int timeout, int opti
+     } else if (call_id < 0) {
+         if (!(options & st_opt_report_only_success)) {
+             crm_trace("Call failed, calling %s: %s", callback_name, pcmk_strerror(call_id));
+-            invoke_callback(stonith, call_id, call_id, user_data, callback);
++            invoke_fence_action_callback(stonith, call_id, call_id, user_data,
++                                         callback);
+         } else {
+             crm_warn("Fencer call failed: %s", pcmk_strerror(call_id));
+         }
+-- 
+2.27.0
+
+
+From c32f11e70a88244f5a3217608055a4eaf8d28231 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Thu, 11 Nov 2021 10:21:00 -0600
+Subject: [PATCH 08/13] Refactor: fencing: drop unnecessary argument when
+ invoking callbacks
+
+Refactor invoke_registered_callbacks() to treat a NULL message as a timeout, so
+we can drop the rc argument.
+---
+ lib/fencing/st_client.c | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index dfc5860fc..9f2b0c1c1 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -882,15 +882,14 @@ invoke_fence_action_callback(stonith_t *st, int call_id, int rc, void *userdata,
+  * \param[in] st        Fencer API connection
+  * \param[in] msg       If non-NULL, fencer reply
+  * \param[in] call_id   If \p msg is NULL, call ID of action that timed out
+- * \param[in] rc        Legacy return code for result of action
+  */
+ static void
+-invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id,
+-                            int rc)
++invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+ {
+     stonith_private_t *private = NULL;
+     stonith_callback_client_t *blob = NULL;
+     stonith_callback_client_t local_blob;
++    int rc = pcmk_ok;
+ 
+     CRM_CHECK(stonith != NULL, return);
+     CRM_CHECK(stonith->st_private != NULL, return);
+@@ -902,7 +901,13 @@ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id,
+     local_blob.user_data = NULL;
+     local_blob.only_success = FALSE;
+ 
+-    if (msg != NULL) {
++    if (msg == NULL) {
++        // Fencer didn't reply in time
++        rc = -ETIME;
++
++    } else {
++        // We have the fencer reply
++
+         crm_element_value_int(msg, F_STONITH_RC, &rc);
+         crm_element_value_int(msg, F_STONITH_CALLID, &call_id);
+     }
+@@ -946,7 +951,7 @@ stonith_async_timeout_handler(gpointer data)
+     struct timer_rec_s *timer = data;
+ 
+     crm_err("Async call %d timed out after %dms", timer->call_id, timer->timeout);
+-    invoke_registered_callbacks(timer->stonith, NULL, timer->call_id, -ETIME);
++    invoke_registered_callbacks(timer->stonith, NULL, timer->call_id);
+ 
+     /* Always return TRUE, never remove the handler
+      * We do that in stonith_del_callback()
+@@ -1021,7 +1026,7 @@ stonith_dispatch_internal(const char *buffer, ssize_t length, gpointer userdata)
+     crm_trace("Activating %s callbacks...", type);
+ 
+     if (pcmk__str_eq(type, T_STONITH_NG, pcmk__str_casei)) {
+-        invoke_registered_callbacks(st, blob.xml, 0, 0);
++        invoke_registered_callbacks(st, blob.xml, 0);
+ 
+     } else if (pcmk__str_eq(type, T_STONITH_NOTIFY, pcmk__str_casei)) {
+         foreach_notify_entry(private, stonith_send_notification, &blob);
+-- 
+2.27.0
+
+
+From 5d8279b51ea9df738354649e4065663f2c16f1e6 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Thu, 11 Nov 2021 10:21:57 -0600
+Subject: [PATCH 09/13] Log: fencing: improve message for callback errors
+
+Improve checking of fencer replies, which also allows us to distinguish an
+internal bug from a bad fencer reply in logs. Lower the bad reply message to
+warning.
+---
+ lib/fencing/st_client.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index 9f2b0c1c1..170b9d450 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -904,15 +904,20 @@ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+     if (msg == NULL) {
+         // Fencer didn't reply in time
+         rc = -ETIME;
++        CRM_LOG_ASSERT(call_id > 0);
+ 
+     } else {
+         // We have the fencer reply
+ 
+-        crm_element_value_int(msg, F_STONITH_RC, &rc);
+-        crm_element_value_int(msg, F_STONITH_CALLID, &call_id);
+-    }
++        if (crm_element_value_int(msg, F_STONITH_RC, &rc) != 0) {
++            rc = -pcmk_err_generic;
++        }
+ 
+-    CRM_CHECK(call_id > 0, crm_log_xml_err(msg, "Bad result"));
++        if ((crm_element_value_int(msg, F_STONITH_CALLID, &call_id) != 0)
++            || (call_id <= 0)) {
++            crm_log_xml_warn(msg, "Bad fencer reply");
++        }
++    }
+ 
+     blob = pcmk__intkey_table_lookup(private->stonith_op_callback_table,
+                                      call_id);
+-- 
+2.27.0
+
+
+From e03c14d24e8cb011e870b9460930d139705bf0a2 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 9 Nov 2021 14:59:12 -0600
+Subject: [PATCH 10/13] Doc: fencing: correct stonith_api_operations_t method
+ descriptions
+
+Many of the methods return a positive call ID on success
+---
+ include/crm/stonith-ng.h | 60 ++++++++++++++++++++++------------------
+ 1 file changed, 33 insertions(+), 27 deletions(-)
+
+diff --git a/include/crm/stonith-ng.h b/include/crm/stonith-ng.h
+index 8d6ad477d..9643820e9 100644
+--- a/include/crm/stonith-ng.h
++++ b/include/crm/stonith-ng.h
+@@ -164,39 +164,38 @@ typedef struct stonith_api_operations_s
+     int (*disconnect)(stonith_t *st);
+ 
+     /*!
+-     * \brief Remove a registered stonith device with the local stonith daemon.
++     * \brief Unregister a fence device with the local fencer
+      *
+-     * \note Synchronous, guaranteed to occur in daemon before function returns.
+-     *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*remove_device)(
+         stonith_t *st, int options, const char *name);
+ 
+     /*!
+-     * \brief Register a stonith device with the local stonith daemon.
++     * \brief Register a fence device with the local fencer
+      *
+-     * \note Synchronous, guaranteed to occur in daemon before function returns.
+-     *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*register_device)(
+         stonith_t *st, int options, const char *id,
+         const char *provider, const char *agent, stonith_key_value_t *params);
+ 
+     /*!
+-     * \brief Remove a fencing level for a specific node.
++     * \brief Unregister a fencing level for specified node with local fencer
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*remove_level)(
+         stonith_t *st, int options, const char *node, int level);
+ 
+     /*!
+-     * \brief Register a fencing level containing the fencing devices to be used
+-     *        at that level for a specific node.
++     * \brief Register a fencing level for specified node with local fencer
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*register_level)(
+         stonith_t *st, int options, const char *node, int level, stonith_key_value_t *device_list);
+@@ -226,21 +225,24 @@ typedef struct stonith_api_operations_s
+     /*!
+      * \brief Retrieve string listing hosts and port assignments from a local stonith device.
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*list)(stonith_t *st, int options, const char *id, char **list_output, int timeout);
+ 
+     /*!
+      * \brief Check to see if a local stonith device is reachable
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*monitor)(stonith_t *st, int options, const char *id, int timeout);
+ 
+     /*!
+      * \brief Check to see if a local stonith device's port is reachable
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*status)(stonith_t *st, int options, const char *id, const char *port, int timeout);
+ 
+@@ -267,7 +269,8 @@ typedef struct stonith_api_operations_s
+      * \param timeout, The default per device timeout to use with each device
+      *                 capable of fencing the target.
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*fence)(stonith_t *st, int options, const char *node, const char *action,
+                  int timeout, int tolerance);
+@@ -275,7 +278,8 @@ typedef struct stonith_api_operations_s
+     /*!
+      * \brief Manually confirm that a node is down.
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*confirm)(stonith_t *st, int options, const char *node);
+ 
+@@ -304,9 +308,6 @@ typedef struct stonith_api_operations_s
+      * \param[in] callback       The callback function to register
+      *
+      * \return \c TRUE on success, \c FALSE if call_id is negative, -errno otherwise
+-     *
+-     * \todo This function should return \c pcmk_ok on success, and \c call_id
+-     *       when negative, but that would break backward compatibility.
+      */
+     int (*register_callback)(stonith_t *st,
+         int call_id,
+@@ -317,12 +318,14 @@ typedef struct stonith_api_operations_s
+         void (*callback)(stonith_t *st, stonith_callback_data_t *data));
+ 
+     /*!
+-     * \brief Remove a registered callback for a given call id.
++     * \brief Remove a registered callback for a given call id
++     *
++     * \return pcmk_ok
+      */
+     int (*remove_callback)(stonith_t *st, int call_id, bool all_callbacks);
+ 
+     /*!
+-     * \brief Remove fencing level for specific node, node regex or attribute
++     * \brief Unregister fencing level for specified node, pattern or attribute
+      *
+      * \param[in] st      Fencer connection to use
+      * \param[in] options Bitmask of stonith_call_options to pass to the fencer
+@@ -332,7 +335,8 @@ typedef struct stonith_api_operations_s
+      * \param[in] value   If not NULL, target by this node attribute value
+      * \param[in] level   Index number of level to remove
+      *
+-     * \return 0 on success, negative error code otherwise
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      *
+      * \note The caller should set only one of node, pattern or attr/value.
+      */
+@@ -341,7 +345,7 @@ typedef struct stonith_api_operations_s
+                              const char *attr, const char *value, int level);
+ 
+     /*!
+-     * \brief Register fencing level for specific node, node regex or attribute
++     * \brief Register fencing level for specified node, pattern or attribute
+      *
+      * \param[in] st          Fencer connection to use
+      * \param[in] options     Bitmask of stonith_call_options to pass to fencer
+@@ -352,7 +356,8 @@ typedef struct stonith_api_operations_s
+      * \param[in] level       Index number of level to add
+      * \param[in] device_list Devices to use in level
+      *
+-     * \return 0 on success, negative error code otherwise
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      *
+      * \note The caller should set only one of node, pattern or attr/value.
+      */
+@@ -398,7 +403,8 @@ typedef struct stonith_api_operations_s
+      * \param delay, Apply a fencing delay. Value -1 means disable also any
+      *               static/random fencing delays from pcmk_delay_base/max
+      *
+-     * \return Legacy Pacemaker return code
++     * \return pcmk_ok (if synchronous) or positive call ID (if asynchronous)
++     *         on success, otherwise a negative legacy Pacemaker return code
+      */
+     int (*fence_with_delay)(stonith_t *st, int options, const char *node, const char *action,
+                             int timeout, int tolerance, int delay);
+-- 
+2.27.0
+
+
+From 18c382731889b626b21ba6a14f9213ef1e45a524 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 23 Nov 2021 11:14:24 -0600
+Subject: [PATCH 11/13] Refactor: fencing: define constant for XML attribute
+ for action output
+
+---
+ daemons/fenced/fenced_commands.c | 4 ++--
+ include/crm/fencing/internal.h   | 1 +
+ lib/fencing/st_actions.c         | 4 ++--
+ lib/fencing/st_client.c          | 2 +-
+ 4 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/daemons/fenced/fenced_commands.c b/daemons/fenced/fenced_commands.c
+index 26501a4b3..aa14c52af 100644
+--- a/daemons/fenced/fenced_commands.c
++++ b/daemons/fenced/fenced_commands.c
+@@ -2677,7 +2677,7 @@ stonith_construct_reply(xmlNode * request, const char *output, xmlNode * data, i
+ 
+     crm_xml_add(reply, "st_origin", __func__);
+     crm_xml_add(reply, F_TYPE, T_STONITH_NG);
+-    crm_xml_add(reply, "st_output", output);
++    crm_xml_add(reply, F_STONITH_OUTPUT, output);
+     crm_xml_add_int(reply, F_STONITH_RC, rc);
+ 
+     if (request == NULL) {
+@@ -2743,7 +2743,7 @@ construct_async_reply(async_command_t *cmd, const pcmk__action_result_t *result)
+     crm_xml_add_int(reply, F_STONITH_CALLOPTS, cmd->options);
+     crm_xml_add_int(reply, F_STONITH_RC,
+                     pcmk_rc2legacy(stonith__result2rc(result)));
+-    crm_xml_add(reply, "st_output", result->action_stdout);
++    crm_xml_add(reply, F_STONITH_OUTPUT, result->action_stdout);
+     return reply;
+ }
+ 
+diff --git a/include/crm/fencing/internal.h b/include/crm/fencing/internal.h
+index 4b5fd3959..f0d294a0b 100644
+--- a/include/crm/fencing/internal.h
++++ b/include/crm/fencing/internal.h
+@@ -105,6 +105,7 @@ void stonith__device_parameter_flags(uint32_t *device_flags,
+ #  define F_STONITH_REMOTE_OP_ID  "st_remote_op"
+ #  define F_STONITH_REMOTE_OP_ID_RELAY  "st_remote_op_relay"
+ #  define F_STONITH_RC            "st_rc"
++#  define F_STONITH_OUTPUT        "st_output"
+ /*! Timeout period per a device execution */
+ #  define F_STONITH_TIMEOUT       "st_timeout"
+ #  define F_STONITH_TOLERANCE     "st_tolerance"
+diff --git a/lib/fencing/st_actions.c b/lib/fencing/st_actions.c
+index d4fc3f5ed..5636810a5 100644
+--- a/lib/fencing/st_actions.c
++++ b/lib/fencing/st_actions.c
+@@ -425,7 +425,7 @@ stonith__xe_set_result(xmlNode *xml, const pcmk__action_result_t *result)
+     crm_xml_add_int(xml, XML_LRM_ATTR_OPSTATUS, (int) execution_status);
+     crm_xml_add_int(xml, XML_LRM_ATTR_RC, exit_status);
+     crm_xml_add(xml, XML_LRM_ATTR_EXIT_REASON, exit_reason);
+-    crm_xml_add(xml, "st_output", action_stdout);
++    crm_xml_add(xml, F_STONITH_OUTPUT, action_stdout);
+ 
+     /* @COMPAT Peers in rolling upgrades, Pacemaker Remote nodes, and external
+      * code that use libstonithd <=2.1.2 don't check for the full result, and
+@@ -474,7 +474,7 @@ stonith__xe_get_result(xmlNode *xml, pcmk__action_result_t *result)
+     CRM_CHECK((xml != NULL) && (result != NULL), return);
+ 
+     exit_reason = crm_element_value(xml, XML_LRM_ATTR_EXIT_REASON);
+-    action_stdout = crm_element_value_copy(xml, "st_output");
++    action_stdout = crm_element_value_copy(xml, F_STONITH_OUTPUT);
+ 
+     // A result must include an exit status and execution status
+     if ((crm_element_value_int(xml, XML_LRM_ATTR_RC, &exit_status) < 0)
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index 170b9d450..2dfadf922 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -600,7 +600,7 @@ stonith_api_list(stonith_t * stonith, int call_options, const char *id, char **l
+     if (output && list_info) {
+         const char *list_str;
+ 
+-        list_str = crm_element_value(output, "st_output");
++        list_str = crm_element_value(output, F_STONITH_OUTPUT);
+ 
+         if (list_str) {
+             *list_info = strdup(list_str);
+-- 
+2.27.0
+
+
+From 9fe9ed5d46c810cb9c12eb07271373ab92d271cd Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 23 Nov 2021 11:39:32 -0600
+Subject: [PATCH 12/13] Refactor: fencing: simplify invoking callbacks
+
+---
+ lib/fencing/st_client.c | 42 +++++++++++++++++------------------------
+ 1 file changed, 17 insertions(+), 25 deletions(-)
+
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index 2dfadf922..2ca094566 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -887,8 +887,7 @@ static void
+ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+ {
+     stonith_private_t *private = NULL;
+-    stonith_callback_client_t *blob = NULL;
+-    stonith_callback_client_t local_blob;
++    stonith_callback_client_t *cb_info = NULL;
+     int rc = pcmk_ok;
+ 
+     CRM_CHECK(stonith != NULL, return);
+@@ -896,11 +895,6 @@ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+ 
+     private = stonith->st_private;
+ 
+-    local_blob.id = NULL;
+-    local_blob.callback = NULL;
+-    local_blob.user_data = NULL;
+-    local_blob.only_success = FALSE;
+-
+     if (msg == NULL) {
+         // Fencer didn't reply in time
+         rc = -ETIME;
+@@ -919,26 +913,21 @@ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+         }
+     }
+ 
+-    blob = pcmk__intkey_table_lookup(private->stonith_op_callback_table,
+-                                     call_id);
+-    if (blob != NULL) {
+-        local_blob = *blob;
+-        blob = NULL;
+-
+-        stonith_api_del_callback(stonith, call_id, FALSE);
+-
+-    } else {
+-        crm_trace("No callback found for call %d", call_id);
+-        local_blob.callback = NULL;
++    if (call_id > 0) {
++        cb_info = pcmk__intkey_table_lookup(private->stonith_op_callback_table,
++                                            call_id);
+     }
+ 
+-    if (local_blob.callback != NULL && (rc == pcmk_ok || local_blob.only_success == FALSE)) {
+-        crm_trace("Invoking callback %s for call %d", crm_str(local_blob.id), call_id);
+-        invoke_fence_action_callback(stonith, call_id, rc, local_blob.user_data,
+-                                     local_blob.callback);
++    if ((cb_info != NULL) && (cb_info->callback != NULL)
++        && (rc == pcmk_ok || !(cb_info->only_success))) {
++        crm_trace("Invoking callback %s for call %d",
++                  crm_str(cb_info->id), call_id);
++        invoke_fence_action_callback(stonith, call_id, rc, cb_info->user_data,
++                                     cb_info->callback);
+ 
+-    } else if (private->op_callback == NULL && rc != pcmk_ok) {
+-        crm_warn("Fencing command failed: %s", pcmk_strerror(rc));
++    } else if ((private->op_callback == NULL) && (rc != pcmk_ok)) {
++        crm_warn("Fencing action without registered callback failed: %s",
++                 pcmk_strerror(rc));
+         crm_log_xml_debug(msg, "Failed fence update");
+     }
+ 
+@@ -947,7 +936,10 @@ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+         invoke_fence_action_callback(stonith, call_id, rc, NULL,
+                                      private->op_callback);
+     }
+-    crm_trace("OP callback activated.");
++
++    if (cb_info != NULL) {
++        stonith_api_del_callback(stonith, call_id, FALSE);
++    }
+ }
+ 
+ static gboolean
+-- 
+2.27.0
+
+
+From 8113b800ce677ba17a16ca176e8f6f9b4a042316 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 23 Nov 2021 18:14:48 -0600
+Subject: [PATCH 13/13] Refactor: fencing: add a missing "break" statement
+
+No effect, but more correct
+---
+ lib/fencing/st_actions.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/lib/fencing/st_actions.c b/lib/fencing/st_actions.c
+index 5636810a5..7eaa8b0f2 100644
+--- a/lib/fencing/st_actions.c
++++ b/lib/fencing/st_actions.c
+@@ -336,6 +336,7 @@ stonith__result2rc(const pcmk__action_result_t *result)
+                 case CRM_EX_EXPIRED:            return EHOSTUNREACH;
+                 default:                        break;
+             }
++            break;
+ 
+         default:
+             break;
+-- 
+2.27.0
+

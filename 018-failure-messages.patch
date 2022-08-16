@@ -1,0 +1,796 @@
+From 08c3420f2c857e7b27cd960f355d787af534da7d Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 18 Jan 2022 16:04:49 -0600
+Subject: [PATCH 01/12] Log: libcrmcommon: improve description for "not
+ connected" status
+
+PCMK_EXEC_NOT_CONNECTED was originally added to represent "No executor
+connection", but it can also now mean no fencer connection, so change it to
+"Internal communication failure" which is probably less mysterious to end users
+anyway (especially since it should be accompanied by a more descriptive exit
+reason).
+---
+ include/crm/common/results.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/crm/common/results.h b/include/crm/common/results.h
+index 873faf5c43..3d322a7ce6 100644
+--- a/include/crm/common/results.h
++++ b/include/crm/common/results.h
+@@ -349,7 +349,7 @@ pcmk_exec_status_str(enum pcmk_exec_status status)
+         case PCMK_EXEC_ERROR_HARD:      return "Hard error";
+         case PCMK_EXEC_ERROR_FATAL:     return "Fatal error";
+         case PCMK_EXEC_NOT_INSTALLED:   return "Not installed";
+-        case PCMK_EXEC_NOT_CONNECTED:   return "No executor connection";
++        case PCMK_EXEC_NOT_CONNECTED:   return "Internal communication failure";
+         case PCMK_EXEC_INVALID:         return "Cannot execute now";
+         case PCMK_EXEC_NO_FENCE_DEVICE: return "No fence device";
+         case PCMK_EXEC_NO_SECRETS:      return "CIB secrets unavailable";
+-- 
+2.27.0
+
+
+From 7c345cf8cf0cb054f5634206880df035bfef7311 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 20 Dec 2021 15:12:36 -0600
+Subject: [PATCH 02/12] Refactor: libcrmcommon: drop unnecessary system error
+ redefinitions
+
+portability.h defines some system error codes that might not be present on
+non-Linux systems.
+
+This was a bad idea, since there's no way to ensure the defined values don't
+conflict with existing system codes. However, we use a number of them, so it's
+probably best to keep them, at least until we can make a backward compatibility
+break.
+
+However, we don't use EUNATCH, ENOSR, or ENOSTR, so we can delete those.
+---
+ include/portability.h | 12 ------------
+ lib/common/results.c  |  9 ++++++---
+ 2 files changed, 6 insertions(+), 15 deletions(-)
+
+diff --git a/include/portability.h b/include/portability.h
+index 9a60c583a7..ee065a376d 100644
+--- a/include/portability.h
++++ b/include/portability.h
+@@ -131,10 +131,6 @@ typedef union
+ #    define EREMOTEIO 193
+ #  endif
+ 
+-#  ifndef EUNATCH
+-#    define EUNATCH   194
+-#  endif
+-
+ #  ifndef ENOKEY
+ #    define ENOKEY    195
+ #  endif
+@@ -147,14 +143,6 @@ typedef union
+ #    define ETIME     197
+ #  endif
+ 
+-#  ifndef ENOSR
+-#    define ENOSR     198
+-#  endif
+-
+-#  ifndef ENOSTR
+-#    define ENOSTR    199
+-#  endif
+-
+ #  ifndef EKEYREJECTED
+ #    define EKEYREJECTED 200
+ #  endif
+diff --git a/lib/common/results.c b/lib/common/results.c
+index 6d120694cd..96cd4e5659 100644
+--- a/lib/common/results.c
++++ b/lib/common/results.c
+@@ -118,9 +118,6 @@ pcmk_strerror(int rc)
+         case EREMOTEIO:
+             return "Remote I/O error";
+             /* coverity[dead_error_condition] False positive on non-Linux */
+-        case EUNATCH:
+-            return "Protocol driver not attached";
+-            /* coverity[dead_error_condition] False positive on non-Linux */
+         case ENOKEY:
+             return "Required key not available";
+     }
+@@ -342,8 +339,12 @@ pcmk_rc_name(int rc)
+         case ENOMSG:            return "ENOMSG";
+         case ENOPROTOOPT:       return "ENOPROTOOPT";
+         case ENOSPC:            return "ENOSPC";
++#ifdef ENOSR
+         case ENOSR:             return "ENOSR";
++#endif
++#ifdef ENOSTR
+         case ENOSTR:            return "ENOSTR";
++#endif
+         case ENOSYS:            return "ENOSYS";
+         case ENOTBLK:           return "ENOTBLK";
+         case ENOTCONN:          return "ENOTCONN";
+@@ -376,7 +377,9 @@ pcmk_rc_name(int rc)
+         case ETIME:             return "ETIME";
+         case ETIMEDOUT:         return "ETIMEDOUT";
+         case ETXTBSY:           return "ETXTBSY";
++#ifdef EUNATCH
+         case EUNATCH:           return "EUNATCH";
++#endif
+         case EUSERS:            return "EUSERS";
+         /* case EWOULDBLOCK:    return "EWOULDBLOCK"; */
+         case EXDEV:             return "EXDEV";
+-- 
+2.27.0
+
+
+From eac8d1ca51eac3f437e18584f7e013d976ecee2c Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 20 Dec 2021 15:33:12 -0600
+Subject: [PATCH 03/12] Log: libcrmcommon: improve handling of portability.h
+ error codes
+
+portability.h defines some system error codes that might not be present on
+non-Linux systems.
+
+Define a constant for each one (for example, PCMK__ECOMM for ECOMM) when
+the system doesn't have the value, so we can detect that when relevant.
+
+Also, make sure pcmk_rc_name() and pcmk_rc_str() handle all of these values.
+---
+ include/portability.h |  8 ++++++++
+ lib/common/results.c  | 32 ++++++++++++++++++++++++++++++--
+ 2 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/include/portability.h b/include/portability.h
+index ee065a376d..5d5fbf21cb 100644
+--- a/include/portability.h
++++ b/include/portability.h
+@@ -116,34 +116,42 @@ typedef union
+ #  include <errno.h>
+ 
+ #  ifndef ENOTUNIQ
++#    define PCMK__ENOTUNIQ
+ #    define ENOTUNIQ  190
+ #  endif
+ 
+ #  ifndef ECOMM
++#    define PCMK__ECOMM
+ #    define ECOMM     191
+ #  endif
+ 
+ #  ifndef ELIBACC
++#    define PCMK__ELIBACC
+ #    define ELIBACC   192
+ #  endif
+ 
+ #  ifndef EREMOTEIO
++#    define PCMK__EREMOTIO
+ #    define EREMOTEIO 193
+ #  endif
+ 
+ #  ifndef ENOKEY
++#    define PCMK__ENOKEY
+ #    define ENOKEY    195
+ #  endif
+ 
+ #  ifndef ENODATA
++#    define PCMK__ENODATA
+ #    define ENODATA   196
+ #  endif
+ 
+ #  ifndef ETIME
++#    define PCMK__ETIME
+ #    define ETIME     197
+ #  endif
+ 
+ #  ifndef EKEYREJECTED
++#    define PCMK__EKEYREJECTED
+ #    define EKEYREJECTED 200
+ #  endif
+ 
+diff --git a/lib/common/results.c b/lib/common/results.c
+index 96cd4e5659..bcf289d0d6 100644
+--- a/lib/common/results.c
++++ b/lib/common/results.c
+@@ -395,9 +395,9 @@ pcmk_rc_name(int rc)
+ #ifdef EISNAM // Not available on OS X, Illumos, Solaris
+         case EISNAM:            return "EISNAM";
+         case EKEYEXPIRED:       return "EKEYEXPIRED";
+-        case EKEYREJECTED:      return "EKEYREJECTED";
+         case EKEYREVOKED:       return "EKEYREVOKED";
+ #endif
++        case EKEYREJECTED:      return "EKEYREJECTED";
+         case EL2HLT:            return "EL2HLT";
+         case EL2NSYNC:          return "EL2NSYNC";
+         case EL3HLT:            return "EL3HLT";
+@@ -443,7 +443,35 @@ pcmk_rc_str(int rc)
+     if (rc < 0) {
+         return "Unknown error";
+     }
+-    return strerror(rc);
++
++    // Handle values that could be defined by system or by portability.h
++    switch (rc) {
++#ifdef PCMK__ENOTUNIQ
++        case ENOTUNIQ:      return "Name not unique on network";
++#endif
++#ifdef PCMK__ECOMM
++        case ECOMM:         return "Communication error on send";
++#endif
++#ifdef PCMK__ELIBACC
++        case ELIBACC:       return "Can not access a needed shared library";
++#endif
++#ifdef PCMK__EREMOTEIO
++        case EREMOTEIO:     return "Remote I/O error";
++#endif
++#ifdef PCMK__ENOKEY
++        case ENOKEY:        return "Required key not available";
++#endif
++#ifdef PCMK__ENODATA
++        case ENODATA:       return "No data available";
++#endif
++#ifdef PCMK__ETIME
++        case ETIME:         return "Timer expired";
++#endif
++#ifdef PCMK__EKEYREJECTED
++        case EKEYREJECTED:  return "Key was rejected by service";
++#endif
++        default:            return strerror(rc);
++    }
+ }
+ 
+ // This returns negative values for errors
+-- 
+2.27.0
+
+
+From 32a38ac6374f85c43e7f4051f5e519822cc481e6 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 20 Dec 2021 15:39:19 -0600
+Subject: [PATCH 04/12] Log: libcrmcommon: redefine pcmk_strerror() in terms of
+ pcmk_rc_str()
+
+... to reduce code duplication. This causes minor differences in the string for
+a few values.
+---
+ lib/common/results.c | 67 +-------------------------------------------
+ 1 file changed, 1 insertion(+), 66 deletions(-)
+
+diff --git a/lib/common/results.c b/lib/common/results.c
+index bcf289d0d6..b2c6e8d553 100644
+--- a/lib/common/results.c
++++ b/lib/common/results.c
+@@ -57,72 +57,7 @@ pcmk_errorname(int rc)
+ const char *
+ pcmk_strerror(int rc)
+ {
+-    if (rc == 0) {
+-        return "OK";
+-    }
+-
+-    rc = abs(rc);
+-
+-    // Of course rc > 0 ... unless someone passed INT_MIN as rc
+-    if ((rc > 0) && (rc < PCMK_ERROR_OFFSET)) {
+-        return strerror(rc);
+-    }
+-
+-    switch (rc) {
+-        case pcmk_err_generic:
+-            return "Generic Pacemaker error";
+-        case pcmk_err_no_quorum:
+-            return "Operation requires quorum";
+-        case pcmk_err_schema_validation:
+-            return "Update does not conform to the configured schema";
+-        case pcmk_err_transform_failed:
+-            return "Schema transform failed";
+-        case pcmk_err_old_data:
+-            return "Update was older than existing configuration";
+-        case pcmk_err_diff_failed:
+-            return "Application of an update diff failed";
+-        case pcmk_err_diff_resync:
+-            return "Application of an update diff failed, requesting a full refresh";
+-        case pcmk_err_cib_modified:
+-            return "The on-disk configuration was manually modified";
+-        case pcmk_err_cib_backup:
+-            return "Could not archive the previous configuration";
+-        case pcmk_err_cib_save:
+-            return "Could not save the new configuration to disk";
+-        case pcmk_err_cib_corrupt:
+-            return "Could not parse on-disk configuration";
+-        case pcmk_err_multiple:
+-            return "Resource active on multiple nodes";
+-        case pcmk_err_node_unknown:
+-            return "Node not found";
+-        case pcmk_err_already:
+-            return "Situation already as requested";
+-        case pcmk_err_bad_nvpair:
+-            return "Bad name/value pair given";
+-        case pcmk_err_schema_unchanged:
+-            return "Schema is already the latest available";
+-        case pcmk_err_unknown_format:
+-            return "Unknown output format";
+-
+-            /* The following cases will only be hit on systems for which they are non-standard */
+-            /* coverity[dead_error_condition] False positive on non-Linux */
+-        case ENOTUNIQ:
+-            return "Name not unique on network";
+-            /* coverity[dead_error_condition] False positive on non-Linux */
+-        case ECOMM:
+-            return "Communication error on send";
+-            /* coverity[dead_error_condition] False positive on non-Linux */
+-        case ELIBACC:
+-            return "Can not access a needed shared library";
+-            /* coverity[dead_error_condition] False positive on non-Linux */
+-        case EREMOTEIO:
+-            return "Remote I/O error";
+-            /* coverity[dead_error_condition] False positive on non-Linux */
+-        case ENOKEY:
+-            return "Required key not available";
+-    }
+-    crm_err("Unknown error code: %d", rc);
+-    return "Unknown error";
++    return pcmk_rc_str(pcmk_legacy2rc(rc));
+ }
+ 
+ // Standard Pacemaker API return codes
+-- 
+2.27.0
+
+
+From 7c331d7e2275ffebbfd5e2f6432a6137a66ee5db Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 20 Dec 2021 15:41:24 -0600
+Subject: [PATCH 05/12] Log: libcrmcommon: don't say "Unknown error"
+
+... which is unhelpful and annoying to users
+---
+ lib/common/results.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/common/results.c b/lib/common/results.c
+index b2c6e8d553..5ffac76549 100644
+--- a/lib/common/results.c
++++ b/lib/common/results.c
+@@ -376,7 +376,7 @@ pcmk_rc_str(int rc)
+         return pcmk__rcs[pcmk_rc_error - rc].desc;
+     }
+     if (rc < 0) {
+-        return "Unknown error";
++        return "Error";
+     }
+ 
+     // Handle values that could be defined by system or by portability.h
+@@ -768,7 +768,7 @@ bz2_strerror(int rc)
+         case BZ_OUTBUFF_FULL:
+             return "output data will not fit into the buffer provided";
+     }
+-    return "Unknown error";
++    return "Data compression error";
+ }
+ 
+ crm_exit_t
+-- 
+2.27.0
+
+
+From 26883b4edda7d81bfcb79bd7b33bb3210beff110 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 20 Dec 2021 16:01:39 -0600
+Subject: [PATCH 06/12] Log: fencing: don't warn if cluster has no watchdog
+ device
+
+---
+ lib/fencing/st_client.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index b1de912b2a..a0f3119f3b 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -187,7 +187,12 @@ stonith__watchdog_fencing_enabled_for_node_api(stonith_t *st, const char *node)
+                  * we drop in here - so as not to make remote nodes
+                  * panic on that answer
+                  */
+-                crm_warn("watchdog-fencing-query failed");
++                if (rc == -ENODEV) {
++                    crm_notice("Cluster does not have watchdog fencing device");
++                } else {
++                    crm_warn("Could not check for watchdog fencing device: %s",
++                             pcmk_strerror(rc));
++                }
+             } else if (list[0] == '\0') {
+                 rv = TRUE;
+             } else {
+-- 
+2.27.0
+
+
+From 72b3c42232deaca64ffba9582598c59331203761 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 20 Dec 2021 16:22:49 -0600
+Subject: [PATCH 07/12] Test: libcrmcommon: update pcmk_rc_str() unit test for
+ recent change
+
+---
+ lib/common/tests/results/pcmk__results_test.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/common/tests/results/pcmk__results_test.c b/lib/common/tests/results/pcmk__results_test.c
+index 57a520c501..e08d4b6261 100644
+--- a/lib/common/tests/results/pcmk__results_test.c
++++ b/lib/common/tests/results/pcmk__results_test.c
+@@ -30,7 +30,7 @@ static void
+ test_for_pcmk_rc_str(void **state) {
+     assert_string_equal(pcmk_rc_str(pcmk_rc_error-1), "Unknown output format");
+     assert_string_equal(pcmk_rc_str(pcmk_rc_ok), "OK");
+-    assert_string_equal(pcmk_rc_str(-1), "Unknown error");
++    assert_string_equal(pcmk_rc_str(-1), "Error");
+ }
+ 
+ static void
+-- 
+2.27.0
+
+
+From c1ad3d6640f695321a83183c95fae2f105adc429 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 21 Dec 2021 10:20:38 -0600
+Subject: [PATCH 08/12] Test: cts-lab: update expected patterns for recent
+ changes
+
+---
+ cts/lab/CTStests.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cts/lab/CTStests.py b/cts/lab/CTStests.py
+index 62c832eb45..f4be998cfb 100644
+--- a/cts/lab/CTStests.py
++++ b/cts/lab/CTStests.py
+@@ -3055,7 +3055,7 @@ class RemoteStonithd(RemoteDriver):
+             r"pacemaker-controld.*:\s+error.*: Operation remote-.*_monitor",
+             r"pacemaker-controld.*:\s+error.*: Result of monitor operation for remote-.*",
+             r"schedulerd.*:\s+Recover remote-.*\s*\(.*\)",
+-            r"error: Result of monitor operation for .* on remote-.*: No executor connection",
++            r"error: Result of monitor operation for .* on remote-.*: Internal communication failure",
+         ]
+ 
+         ignore_pats.extend(RemoteDriver.errorstoignore(self))
+-- 
+2.27.0
+
+
+From f272e2f526633c707e894b39c7c7bce3c14de898 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 21 Dec 2021 15:40:49 -0600
+Subject: [PATCH 09/12] Log: controller,libpacemaker: make history XML creation
+ less chatty
+
+Other messages with the same info will already be logged at higher severity
+---
+ daemons/controld/controld_execd.c      |  3 +--
+ daemons/controld/controld_te_actions.c |  7 ++-----
+ include/pcmki/pcmki_sched_utils.h      |  3 +--
+ lib/pacemaker/pcmk_injections.c        |  3 +--
+ lib/pacemaker/pcmk_sched_actions.c     | 12 +++++-------
+ 5 files changed, 10 insertions(+), 18 deletions(-)
+
+diff --git a/daemons/controld/controld_execd.c b/daemons/controld/controld_execd.c
+index 15784e7687..52157fa5d4 100644
+--- a/daemons/controld/controld_execd.c
++++ b/daemons/controld/controld_execd.c
+@@ -693,9 +693,8 @@ build_operation_update(xmlNode * parent, lrmd_rsc_info_t * rsc, lrmd_event_data_
+         caller_version = CRM_FEATURE_SET;
+     }
+ 
+-    crm_trace("Building %s operation update with originator version: %s", op->rsc_id, caller_version);
+     xml_op = pcmk__create_history_xml(parent, op, caller_version, target_rc,
+-                                      fsa_our_uname, src, LOG_DEBUG);
++                                      fsa_our_uname, src);
+     if (xml_op == NULL) {
+         return TRUE;
+     }
+diff --git a/daemons/controld/controld_te_actions.c b/daemons/controld/controld_te_actions.c
+index 63b7c72359..b0bcb8b2e4 100644
+--- a/daemons/controld/controld_te_actions.c
++++ b/daemons/controld/controld_te_actions.c
+@@ -181,7 +181,6 @@ controld_record_action_timeout(crm_action_t *action)
+     lrmd_event_data_t *op = NULL;
+     xmlNode *state = NULL;
+     xmlNode *rsc = NULL;
+-    xmlNode *xml_op = NULL;
+     xmlNode *action_rsc = NULL;
+ 
+     int rc = pcmk_ok;
+@@ -245,12 +244,10 @@ controld_record_action_timeout(crm_action_t *action)
+     op->user_data = pcmk__transition_key(transition_graph->id, action->id,
+                                          target_rc, te_uuid);
+ 
+-    xml_op = pcmk__create_history_xml(rsc, op, CRM_FEATURE_SET, target_rc,
+-                                      target, __func__, LOG_INFO);
++    pcmk__create_history_xml(rsc, op, CRM_FEATURE_SET, target_rc, target,
++                             __func__);
+     lrmd_free_event(op);
+ 
+-    crm_log_xml_trace(xml_op, "Action timeout");
+-
+     rc = fsa_cib_conn->cmds->update(fsa_cib_conn, XML_CIB_TAG_STATUS, state, call_options);
+     fsa_register_cib_callback(rc, FALSE, NULL, cib_action_updated);
+     free_xml(state);
+diff --git a/include/pcmki/pcmki_sched_utils.h b/include/pcmki/pcmki_sched_utils.h
+index 68d60fc7db..144424a609 100644
+--- a/include/pcmki/pcmki_sched_utils.h
++++ b/include/pcmki/pcmki_sched_utils.h
+@@ -52,8 +52,7 @@ extern void process_utilization(pe_resource_t * rsc, pe_node_t ** prefer, pe_wor
+ 
+ xmlNode *pcmk__create_history_xml(xmlNode *parent, lrmd_event_data_t *event,
+                                  const char *caller_version, int target_rc,
+-                                 const char *node, const char *origin,
+-                                 int level);
++                                 const char *node, const char *origin);
+ 
+ #  define LOAD_STOPPED "load_stopped"
+ 
+diff --git a/lib/pacemaker/pcmk_sched_transition.c b/lib/pacemaker/pcmk_sched_transition.c
+index 678c3f5dd2..1aa90a5a0b 100644
+--- a/lib/pacemaker/pcmk_sched_transition.c
++++ b/lib/pacemaker/pcmk_sched_transition.c
+@@ -201,8 +201,7 @@ inject_op(xmlNode * cib_resource, lrmd_event_data_t * op, int target_rc)
+ inject_op(xmlNode * cib_resource, lrmd_event_data_t * op, int target_rc)
+ {
+     return pcmk__create_history_xml(cib_resource, op, CRM_FEATURE_SET,
+-                                    target_rc, NULL, crm_system_name,
+-                                    LOG_TRACE);
++                                    target_rc, NULL, crm_system_name);
+ }
+ 
+ static xmlNode *
+diff --git a/lib/pacemaker/pcmk_sched_actions.c b/lib/pacemaker/pcmk_sched_actions.c
+index f8200b0efc..4f63d3374d 100644
+--- a/lib/pacemaker/pcmk_sched_utils.c
++++ b/lib/pacemaker/pcmk_sched_utils.c
+@@ -892,14 +892,13 @@ add_op_digest_to_xml(lrmd_event_data_t *op, xmlNode *update)
+  * \param[in]     target_rc       Expected result of operation
+  * \param[in]     node            Name of node on which operation was performed
+  * \param[in]     origin          Arbitrary description of update source
+- * \param[in]     level           A log message will be logged at this level
+  *
+  * \return Newly created XML node for history update
+  */
+ xmlNode *
+ pcmk__create_history_xml(xmlNode *parent, lrmd_event_data_t *op,
+                          const char *caller_version, int target_rc,
+-                         const char *node, const char *origin, int level)
++                         const char *node, const char *origin)
+ {
+     char *key = NULL;
+     char *magic = NULL;
+@@ -912,11 +911,10 @@ pcmk__create_history_xml(xmlNode *parent, lrmd_event_data_t *op,
+     const char *task = NULL;
+ 
+     CRM_CHECK(op != NULL, return NULL);
+-    do_crm_log(level, "%s: Updating resource %s after %s op %s (interval=%u)",
+-               origin, op->rsc_id, op->op_type,
+-               pcmk_exec_status_str(op->op_status), op->interval_ms);
+-
+-    crm_trace("DC version: %s", caller_version);
++    crm_trace("Creating history XML for %s-interval %s action for %s on %s "
++              "(DC version: %s, origin: %s)",
++              pcmk__readable_interval(op->interval_ms), op->op_type, op->rsc_id,
++              ((node == NULL)? "no node" : node), caller_version, origin);
+ 
+     task = op->op_type;
+ 
+-- 
+2.27.0
+
+
+From 06b1da9e5345e0d1571042c11646fd7157961279 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 21 Dec 2021 17:09:44 -0600
+Subject: [PATCH 10/12] Feature: controller: improve exit reason for internal
+ timeouts
+
+Functionize the part of controld_record_action_timeout() that creates a fake
+executor event, into a new function synthesize_timeout_event(), and have it set
+a more detailed exit reason describing what timed out.
+---
+ daemons/controld/controld_te_actions.c | 61 ++++++++++++++++++++------
+ 1 file changed, 48 insertions(+), 13 deletions(-)
+
+diff --git a/daemons/controld/controld_te_actions.c b/daemons/controld/controld_te_actions.c
+index b0bcb8b2e4..de2fbb82bf 100644
+--- a/daemons/controld/controld_te_actions.c
++++ b/daemons/controld/controld_te_actions.c
+@@ -175,6 +175,53 @@ te_crm_command(crm_graph_t * graph, crm_action_t * action)
+     return TRUE;
+ }
+ 
++/*!
++ * \internal
++ * \brief Synthesize an executor event for a resource action timeout
++ *
++ * \param[in] action     Resource action that timed out
++ * \param[in] target_rc  Expected result of action that timed out
++ *
++ * Synthesize an executor event for a resource action timeout. (If the executor
++ * gets a timeout while waiting for a resource action to complete, that will be
++ * reported via the usual callback. This timeout means we didn't hear from the
++ * executor itself or the controller that relayed the action to the executor.)
++ *
++ * \return Newly created executor event for result of \p action
++ * \note The caller is responsible for freeing the return value using
++ *       lrmd_free_event().
++ */
++static lrmd_event_data_t *
++synthesize_timeout_event(crm_action_t *action, int target_rc)
++{
++    lrmd_event_data_t *op = NULL;
++    const char *target = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
++    const char *reason = NULL;
++    char *dynamic_reason = NULL;
++
++    if (pcmk__str_eq(target, get_local_node_name(), pcmk__str_casei)) {
++        reason = "Local executor did not return result in time";
++    } else {
++        const char *router_node = NULL;
++
++        router_node = crm_element_value(action->xml, XML_LRM_ATTR_ROUTER_NODE);
++        if (router_node == NULL) {
++            router_node = target;
++        }
++        dynamic_reason = crm_strdup_printf("Controller on %s did not return "
++                                           "result in time", router_node);
++        reason = dynamic_reason;
++    }
++
++    op = pcmk__event_from_graph_action(NULL, action, PCMK_EXEC_TIMEOUT,
++                                       PCMK_OCF_UNKNOWN_ERROR, reason);
++    op->call_id = -1;
++    op->user_data = pcmk__transition_key(transition_graph->id, action->id,
++                                         target_rc, te_uuid);
++    free(dynamic_reason);
++    return op;
++}
++
+ void
+ controld_record_action_timeout(crm_action_t *action)
+ {
+@@ -231,19 +278,7 @@ controld_record_action_timeout(crm_action_t *action)
+     crm_copy_xml_element(action_rsc, rsc, XML_AGENT_ATTR_CLASS);
+     crm_copy_xml_element(action_rsc, rsc, XML_AGENT_ATTR_PROVIDER);
+ 
+-    /* If the executor gets a timeout while waiting for the action to complete,
+-     * that will be reported via the usual callback. This timeout means that we
+-     * didn't hear from the executor or the controller that relayed the action
+-     * to the executor.
+-     */
+-    op = pcmk__event_from_graph_action(NULL, action, PCMK_EXEC_TIMEOUT,
+-                                       PCMK_OCF_UNKNOWN_ERROR,
+-                                       "Cluster communication timeout "
+-                                       "(no response from executor)");
+-    op->call_id = -1;
+-    op->user_data = pcmk__transition_key(transition_graph->id, action->id,
+-                                         target_rc, te_uuid);
+-
++    op = synthesize_timeout_event(action, target_rc);
+     pcmk__create_history_xml(rsc, op, CRM_FEATURE_SET, target_rc, target,
+                              __func__);
+     lrmd_free_event(op);
+-- 
+2.27.0
+
+
+From be620d206faefab967d4c8567d6554d10c9e72ba Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Wed, 22 Dec 2021 16:35:06 -0600
+Subject: [PATCH 11/12] Feature: fencing: improve exit reason for fencing
+ timeouts
+
+Troubleshooting timeouts is one of the more difficult aspects of cluster
+maintenance. We want to give as much of a hint as possible, but for fencing in
+particular it is difficult because an operation might involve multiple retries
+of multiple devices.
+
+Barring another major project to track exactly which devices, retries, etc.,
+were used in a given operation, these changes in wording are probably the best
+we can do.
+---
+ daemons/fenced/fenced_remote.c | 8 +++++---
+ lib/fencing/st_client.c        | 2 +-
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/daemons/fenced/fenced_remote.c b/daemons/fenced/fenced_remote.c
+index 1e237150c5..6eebb7381e 100644
+--- a/daemons/fenced/fenced_remote.c
++++ b/daemons/fenced/fenced_remote.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2009-2021 the Pacemaker project contributors
++ * Copyright 2009-2022 the Pacemaker project contributors
+  *
+  * The version control history for this file may have further details.
+  *
+@@ -715,8 +715,10 @@ remote_op_timeout(gpointer userdata)
+                   CRM_XS " id=%.8s",
+                   op->action, op->target, op->client_name, op->id);
+     } else {
+-        finalize_timed_out_op(userdata, "Fencing could not be completed "
+-                                        "within overall timeout");
++        finalize_timed_out_op(userdata, "Fencing did not complete within a "
++                                        "total timeout based on the "
++                                        "configured timeout and retries for "
++                                        "any devices attempted");
+     }
+     return G_SOURCE_REMOVE;
+ }
+diff --git a/lib/fencing/st_client.c b/lib/fencing/st_client.c
+index a0f3119f3b..718739b321 100644
+--- a/lib/fencing/st_client.c
++++ b/lib/fencing/st_client.c
+@@ -906,7 +906,7 @@ invoke_registered_callbacks(stonith_t *stonith, xmlNode *msg, int call_id)
+     if (msg == NULL) {
+         // Fencer didn't reply in time
+         pcmk__set_result(&result, CRM_EX_ERROR, PCMK_EXEC_TIMEOUT,
+-                         "Timeout waiting for reply from fencer");
++                         "Fencer accepted request but did not reply in time");
+         CRM_LOG_ASSERT(call_id > 0);
+ 
+     } else {
+-- 
+2.27.0
+
+
+From 0fe8ede2f8e838e335fe42846bdf147111ce9955 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Wed, 22 Dec 2021 17:09:09 -0600
+Subject: [PATCH 12/12] Feature: libcrmservice: improve exit reason for
+ timeouts
+
+The services library doesn't have enough information about an action to say
+(for example) what configuration parameters might be relevant, but we can at
+least distinguish what kind of agent timed out.
+---
+ lib/services/services_linux.c | 12 +++++++++++-
+ lib/services/systemd.c        |  2 +-
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/lib/services/services_linux.c b/lib/services/services_linux.c
+index f15eee860e..d6aafcfe46 100644
+--- a/lib/services/services_linux.c
++++ b/lib/services/services_linux.c
+@@ -677,9 +677,19 @@ async_action_complete(mainloop_child_t *p, pid_t pid, int core, int signo,
+         parse_exit_reason_from_stderr(op);
+ 
+     } else if (mainloop_child_timeout(p)) {
++        const char *reason = NULL;
++
++        if (op->rsc != NULL) {
++            reason = "Resource agent did not complete in time";
++        } else if (pcmk__str_eq(op->standard, PCMK_RESOURCE_CLASS_STONITH,
++                                pcmk__str_none)) {
++            reason = "Fence agent did not complete in time";
++        } else {
++            reason = "Process did not complete in time";
++        }
+         crm_info("%s[%d] timed out after %dms", op->id, op->pid, op->timeout);
+         services__set_result(op, services__generic_error(op), PCMK_EXEC_TIMEOUT,
+-                             "Process did not exit within specified timeout");
++                             reason);
+ 
+     } else if (op->cancel) {
+         /* If an in-flight recurring operation was killed because it was
+diff --git a/lib/services/systemd.c b/lib/services/systemd.c
+index 27a3b376db..d87b287424 100644
+--- a/lib/services/systemd.c
++++ b/lib/services/systemd.c
+@@ -995,7 +995,7 @@ systemd_timeout_callback(gpointer p)
+     crm_info("%s action for systemd unit %s named '%s' timed out",
+              op->action, op->agent, op->rsc);
+     services__set_result(op, PCMK_OCF_UNKNOWN_ERROR, PCMK_EXEC_TIMEOUT,
+-                         "Systemd action did not complete within specified timeout");
++                         "Systemd unit action did not complete in time");
+     services__finalize_async_op(op);
+     return FALSE;
+ }
+-- 
+2.27.0
+

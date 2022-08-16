@@ -1,0 +1,143 @@
+From b52fe799c89637e2a761a5725c2376db5c05f2d1 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 30 Nov 2021 15:51:54 -0600
+Subject: [PATCH 1/2] Low: resources: remove DOCTYPE from OCF 1.1-compliant
+ agents
+
+OCF 1.1 replaced the DTD schema with RNG, but DOCTYPE still refers to the DTD.
+There's no DOCTYPE for RNG, and DOCTYPE is optional, so just remove it.
+---
+ extra/resources/Dummy        | 3 +--
+ extra/resources/HealthIOWait | 3 +--
+ extra/resources/Stateful     | 3 +--
+ extra/resources/attribute    | 3 +--
+ extra/resources/ping         | 3 +--
+ extra/resources/remote       | 3 +--
+ 6 files changed, 6 insertions(+), 12 deletions(-)
+
+diff --git a/extra/resources/Dummy b/extra/resources/Dummy
+index a344deac0..56584e564 100755
+--- a/extra/resources/Dummy
++++ b/extra/resources/Dummy
+@@ -58,8 +58,7 @@
+ meta_data() {
+     cat <<END
+ <?xml version="1.0"?>
+-<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+-<resource-agent name="Dummy" version="2.0">
++<resource-agent name="Dummy" version="2.1">
+ <version>1.1</version>
+ 
+ <longdesc lang="en">
+diff --git a/extra/resources/HealthIOWait b/extra/resources/HealthIOWait
+index 43a8b70c4..5f1483ef7 100755
+--- a/extra/resources/HealthIOWait
++++ b/extra/resources/HealthIOWait
+@@ -25,8 +25,7 @@
+ meta_data() {
+         cat <<END
+ <?xml version="1.0"?>
+-<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+-<resource-agent name="HealthIOWait" version="1.1">
++<resource-agent name="HealthIOWait" version="1.2">
+ <version>1.1</version>
+ 
+ <longdesc lang="en">
+diff --git a/extra/resources/Stateful b/extra/resources/Stateful
+index ae3424bbf..0d2062d51 100755
+--- a/extra/resources/Stateful
++++ b/extra/resources/Stateful
+@@ -39,8 +39,7 @@ SCORE_PROMOTED=10
+ meta_data() {
+     cat <<END
+ <?xml version="1.0"?>
+-<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+-<resource-agent name="Stateful" version="1.1">
++<resource-agent name="Stateful" version="1.2">
+ <version>1.1</version>
+ 
+ <longdesc lang="en">
+diff --git a/extra/resources/attribute b/extra/resources/attribute
+index 1800dff8f..a2bd353e0 100755
+--- a/extra/resources/attribute
++++ b/extra/resources/attribute
+@@ -57,8 +57,7 @@ END
+ meta_data() {
+     cat <<END
+ <?xml version="1.0"?>
+-<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+-<resource-agent name="attribute" version="1.1">
++<resource-agent name="attribute" version="1.2">
+   <version>1.1</version>
+   <shortdesc lang="en">Manages a node attribute</shortdesc>
+   <longdesc lang="en">
+diff --git a/extra/resources/ping b/extra/resources/ping
+index 6e296979f..7cc6b802d 100755
+--- a/extra/resources/ping
++++ b/extra/resources/ping
+@@ -36,8 +36,7 @@
+ meta_data() {
+      cat <<END
+ <?xml version="1.0"?>
+-<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+-<resource-agent name="ping" version="1.1">
++<resource-agent name="ping" version="1.2">
+ <version>1.1</version>
+ 
+ <longdesc lang="en">
+diff --git a/extra/resources/remote b/extra/resources/remote
+index a53262bb6..f7e40dc81 100755
+--- a/extra/resources/remote
++++ b/extra/resources/remote
+@@ -24,8 +24,7 @@
+ meta_data() {
+     cat <<END
+ <?xml version="1.0"?>
+-<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+-<resource-agent name="remote" version="1.0">
++<resource-agent name="remote" version="1.1">
+   <version>1.1</version>
+   <shortdesc lang="en">Pacemaker Remote connection</shortdesc>
+   <parameters>
+-- 
+2.27.0
+
+
+From 70f469120f8db6a024c786466ee74a6c7fbd1f43 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 30 Nov 2021 15:53:39 -0600
+Subject: [PATCH 2/2] Fix: resources: use correct syntax in Stateful meta-data
+
+The OCF standard only allows "0" or "1" for booleans.
+
+This fixes incorrect ocf:pacemaker:Stateful meta-data syntax introduced by
+7024398 as a regression in the 2.1.0 release.
+---
+ extra/resources/Stateful | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/extra/resources/Stateful b/extra/resources/Stateful
+index 0d2062d51..2ebe6725f 100755
+--- a/extra/resources/Stateful
++++ b/extra/resources/Stateful
+@@ -57,7 +57,7 @@ Location to store the resource state in
+ <content type="string" default="${HA_VARRUN%%/}/Stateful-${OCF_RESOURCE_INSTANCE}.state" />
+ </parameter>
+ 
+-<parameter name="envfile" reloadable="true">
++<parameter name="envfile" reloadable="1">
+ <longdesc lang="en">
+ If this is set, the environment will be dumped to this file for every call.
+ </longdesc>
+@@ -65,7 +65,7 @@ If this is set, the environment will be dumped to this file for every call.
+ <content type="string" default="" />
+ </parameter>
+ 
+-<parameter name="notify_delay" reloadable="true">
++<parameter name="notify_delay" reloadable="1">
+ <longdesc lang="en">
+ The notify action will sleep for this many seconds before returning,
+ to simulate a long-running notify.
+-- 
+2.27.0
+
