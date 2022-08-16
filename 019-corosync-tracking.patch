@@ -1,0 +1,29 @@
+From e8bf0161b872267f1bb7143a9866fdc15ec218f2 Mon Sep 17 00:00:00 2001
+From: Jan Friesse <jfriesse@redhat.com>
+Date: Tue, 18 Jan 2022 16:35:24 +0100
+Subject: [PATCH] Fix: corosync: Repeat corosync_cfg_trackstart
+
+corosync_cfg_trackstart can fail with CS_ERR_TRY_AGAIN failure so
+(similarly as for corosync_cfg_local_get, ...) handle failure with
+using cs_repeat macro.
+---
+ daemons/pacemakerd/pcmkd_corosync.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/daemons/pacemakerd/pcmkd_corosync.c b/daemons/pacemakerd/pcmkd_corosync.c
+index 7990bc43c5..cd7a40321d 100644
+--- a/daemons/pacemakerd/pcmkd_corosync.c
++++ b/daemons/pacemakerd/pcmkd_corosync.c
+@@ -186,7 +186,8 @@ cluster_connect_cfg(void)
+     crm_debug("Corosync reports local node ID is %lu", (unsigned long) nodeid);
+ 
+ #ifdef HAVE_COROSYNC_CFG_TRACKSTART
+-    rc = corosync_cfg_trackstart(cfg_handle, 0);
++    retries = 0;
++    cs_repeat(retries, 30, rc = corosync_cfg_trackstart(cfg_handle, 0));
+     if (rc != CS_OK) {
+         crm_crit("Could not enable Corosync CFG shutdown tracker: %s " CRM_XS " rc=%d",
+                  cs_strerror(rc), rc);
+-- 
+2.27.0
+

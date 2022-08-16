@@ -1,0 +1,875 @@
+From 523f62eb235836a01ea039c23ada261a494f7b32 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Wed, 10 Nov 2021 15:22:47 -0600
+Subject: [PATCH 01/11] Feature: libpacemaker: improve result for high-level
+ fencing API
+
+Previously, pcmk__fencing_action()'s helpers for asynchronous fencing actions
+initialized the result to a generic error, and then overrode that only on
+success.
+
+Now, set a detailed result for early failures, and use the full result when
+available from the fencing API.
+
+A standard return code is still returned to callers at this point.
+---
+ lib/pacemaker/pcmk_fence.c | 31 ++++++++++++++++++-------------
+ 1 file changed, 18 insertions(+), 13 deletions(-)
+
+diff --git a/lib/pacemaker/pcmk_fence.c b/lib/pacemaker/pcmk_fence.c
+index 7d6acd0de6..125e1b268b 100644
+--- a/lib/pacemaker/pcmk_fence.c
++++ b/lib/pacemaker/pcmk_fence.c
+@@ -32,8 +32,8 @@ static struct {
+     unsigned int timeout;
+     unsigned int tolerance;
+     int delay;
+-    int rc;
+-} async_fence_data;
++    pcmk__action_result_t result;
++} async_fence_data = { NULL, };
+ 
+ static int
+ handle_level(stonith_t *st, char *target, int fence_level,
+@@ -76,14 +76,13 @@ handle_level(stonith_t *st, char *target, int fence_level,
+ static void
+ notify_callback(stonith_t * st, stonith_event_t * e)
+ {
+-    if (e->result != pcmk_ok) {
+-        return;
+-    }
++    if (pcmk__str_eq(async_fence_data.target, e->target, pcmk__str_casei)
++        && pcmk__str_eq(async_fence_data.action, e->action, pcmk__str_casei)) {
+ 
+-    if (pcmk__str_eq(async_fence_data.target, e->target, pcmk__str_casei) &&
+-        pcmk__str_eq(async_fence_data.action, e->action, pcmk__str_casei)) {
+-
+-        async_fence_data.rc = e->result;
++        pcmk__set_result(&async_fence_data.result,
++                         stonith__event_exit_status(e),
++                         stonith__event_execution_status(e),
++                         stonith__event_exit_reason(e));
+         g_main_loop_quit(mainloop);
+     }
+ }
+@@ -91,8 +90,9 @@ notify_callback(stonith_t * st, stonith_event_t * e)
+ static void
+ fence_callback(stonith_t * stonith, stonith_callback_data_t * data)
+ {
+-    async_fence_data.rc = data->rc;
+-
++    pcmk__set_result(&async_fence_data.result, stonith__exit_status(data),
++                     stonith__execution_status(data),
++                     stonith__exit_reason(data));
+     g_main_loop_quit(mainloop);
+ }
+ 
+@@ -106,6 +106,8 @@ async_fence_helper(gpointer user_data)
+     if (rc != pcmk_ok) {
+         fprintf(stderr, "Could not connect to fencer: %s\n", pcmk_strerror(rc));
+         g_main_loop_quit(mainloop);
++        pcmk__set_result(&async_fence_data.result, CRM_EX_ERROR,
++                         PCMK_EXEC_NOT_CONNECTED, NULL);
+         return TRUE;
+     }
+ 
+@@ -121,6 +123,8 @@ async_fence_helper(gpointer user_data)
+ 
+     if (call_id < 0) {
+         g_main_loop_quit(mainloop);
++        pcmk__set_result(&async_fence_data.result, CRM_EX_ERROR,
++                         PCMK_EXEC_ERROR, pcmk_strerror(call_id));
+         return TRUE;
+     }
+ 
+@@ -146,7 +150,8 @@ pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+     async_fence_data.timeout = timeout;
+     async_fence_data.tolerance = tolerance;
+     async_fence_data.delay = delay;
+-    async_fence_data.rc = pcmk_err_generic;
++    pcmk__set_result(&async_fence_data.result, CRM_EX_ERROR, PCMK_EXEC_UNKNOWN,
++                     NULL);
+ 
+     trig = mainloop_add_trigger(G_PRIORITY_HIGH, async_fence_helper, NULL);
+     mainloop_set_trigger(trig);
+@@ -156,7 +161,7 @@ pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+ 
+     free(async_fence_data.name);
+ 
+-    return pcmk_legacy2rc(async_fence_data.rc);
++    return stonith__result2rc(&async_fence_data.result);
+ }
+ 
+ #ifdef BUILD_PUBLIC_LIBPACEMAKER
+-- 
+2.27.0
+
+
+From 008868fae5d1b0d6d8dc61f7acfb3856801ddd52 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 10 Dec 2021 15:36:10 -0600
+Subject: [PATCH 02/11] Refactor: libpacemaker: add exit reason to high-level
+ fencing API
+
+Nothing uses it as of this commit
+---
+ include/pacemaker.h         |  5 ++++-
+ include/pcmki/pcmki_fence.h |  5 ++++-
+ lib/pacemaker/pcmk_fence.c  | 10 +++++++---
+ tools/stonith_admin.c       |  6 +++---
+ 4 files changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/include/pacemaker.h b/include/pacemaker.h
+index a8523c969e..0daa4c5945 100644
+--- a/include/pacemaker.h
++++ b/include/pacemaker.h
+@@ -189,12 +189,15 @@ int pcmk_list_nodes(xmlNodePtr *xml, char *node_types);
+  *                      again.
+  * \param[in] delay     Apply a fencing delay. Value -1 means disable also any
+  *                      static/random fencing delays from pcmk_delay_base/max.
++ * \param[out] reason   If not NULL, where to put descriptive failure reason
+  *
+  * \return Standard Pacemaker return code
++ * \note If \p reason is not NULL, the caller is responsible for freeing its
++ *       returned value.
+  */
+ int pcmk_fence_action(stonith_t *st, const char *target, const char *action,
+                       const char *name, unsigned int timeout, unsigned int tolerance,
+-                      int delay);
++                      int delay, char **reason);
+ 
+ /*!
+  * \brief List the fencing operations that have occurred for a specific node.
+diff --git a/include/pcmki/pcmki_fence.h b/include/pcmki/pcmki_fence.h
+index d4cef68f5c..c3da0361d7 100644
+--- a/include/pcmki/pcmki_fence.h
++++ b/include/pcmki/pcmki_fence.h
+@@ -28,12 +28,15 @@
+  *                      again.
+  * \param[in] delay     Apply a fencing delay. Value -1 means disable also any
+  *                      static/random fencing delays from pcmk_delay_base/max
++ * \param[out] reason   If not NULL, where to put descriptive failure reason
+  *
+  * \return Standard Pacemaker return code
++ * \note If \p reason is not NULL, the caller is responsible for freeing its
++ *       returned value.
+  */
+ int pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+                        const char *name, unsigned int timeout, unsigned int tolerance,
+-                       int delay);
++                       int delay, char **reason);
+ 
+ /*!
+  * \brief List the fencing operations that have occurred for a specific node.
+diff --git a/lib/pacemaker/pcmk_fence.c b/lib/pacemaker/pcmk_fence.c
+index 125e1b268b..dbf084fb6b 100644
+--- a/lib/pacemaker/pcmk_fence.c
++++ b/lib/pacemaker/pcmk_fence.c
+@@ -139,7 +139,7 @@ async_fence_helper(gpointer user_data)
+ int
+ pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+                    const char *name, unsigned int timeout, unsigned int tolerance,
+-                   int delay)
++                   int delay, char **reason)
+ {
+     crm_trigger_t *trig;
+ 
+@@ -161,6 +161,9 @@ pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+ 
+     free(async_fence_data.name);
+ 
++    if ((reason != NULL) && (async_fence_data.result.exit_reason != NULL)) {
++        *reason = strdup(async_fence_data.result.exit_reason);
++    }
+     return stonith__result2rc(&async_fence_data.result);
+ }
+ 
+@@ -168,9 +171,10 @@ pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+ int
+ pcmk_fence_action(stonith_t *st, const char *target, const char *action,
+                   const char *name, unsigned int timeout, unsigned int tolerance,
+-                  int delay)
++                  int delay, char **reason)
+ {
+-    return pcmk__fence_action(st, target, action, name, timeout, tolerance, delay);
++    return pcmk__fence_action(st, target, action, name, timeout, tolerance,
++                              delay, reason);
+ }
+ #endif
+ 
+diff --git a/tools/stonith_admin.c b/tools/stonith_admin.c
+index 2d48326e1b..fdc7c46d49 100644
+--- a/tools/stonith_admin.c
++++ b/tools/stonith_admin.c
+@@ -571,17 +571,17 @@ main(int argc, char **argv)
+ 
+         case 'B':
+             rc = pcmk__fence_action(st, target, "reboot", name, options.timeout*1000,
+-                                    options.tolerance*1000, options.delay);
++                                    options.tolerance*1000, options.delay, NULL);
+             break;
+ 
+         case 'F':
+             rc = pcmk__fence_action(st, target, "off", name, options.timeout*1000,
+-                                    options.tolerance*1000, options.delay);
++                                    options.tolerance*1000, options.delay, NULL);
+             break;
+ 
+         case 'U':
+             rc = pcmk__fence_action(st, target, "on", name, options.timeout*1000,
+-                                    options.tolerance*1000, options.delay);
++                                    options.tolerance*1000, options.delay, NULL);
+             break;
+ 
+         case 'h':
+-- 
+2.27.0
+
+
+From 7570510f9985ba75ef73fb824f28109e135ace0a Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 10 Dec 2021 15:40:48 -0600
+Subject: [PATCH 03/11] Refactor: libpacemaker: rename high-level fencing API
+
+Rename pcmk_fence_action() to pcmk_request_fencing(), and its internal
+equivalent pcmk__fence_action() to pcmk__request_fencing(). The change is
+backward-compatible because pcmk_fence_action() has not been exposed publicly
+yet.
+
+"Fence action" can be easily confused with libcrmservice actions, liblrmd
+actions, libstonithd actions, scheduler actions, and so forth.
+
+Also, the new name makes it clearer that the caller is requesting that the
+cluster perform fencing, and not directly performing fencing.
+---
+ include/pacemaker.h         | 20 ++++++++++----------
+ include/pcmki/pcmki_fence.h | 16 ++++++++--------
+ lib/pacemaker/pcmk_fence.c  | 16 ++++++++--------
+ tools/stonith_admin.c       | 18 ++++++++++++------
+ 4 files changed, 38 insertions(+), 32 deletions(-)
+
+diff --git a/include/pacemaker.h b/include/pacemaker.h
+index 0daa4c5945..e581f975a9 100644
+--- a/include/pacemaker.h
++++ b/include/pacemaker.h
+@@ -177,27 +177,27 @@ int pcmk_list_nodes(xmlNodePtr *xml, char *node_types);
+ #ifdef BUILD_PUBLIC_LIBPACEMAKER
+ 
+ /*!
+- * \brief Perform a STONITH action.
++ * \brief Ask the cluster to perform fencing
+  *
+- * \param[in] st        A connection to the STONITH API.
+- * \param[in] target    The node receiving the action.
+- * \param[in] action    The action to perform.
++ * \param[in] st        A connection to the fencer API
++ * \param[in] target    The node that should be fenced
++ * \param[in] action    The fencing action (on, off, reboot) to perform
+  * \param[in] name      Who requested the fence action?
+- * \param[in] timeout   How long to wait for the operation to complete (in ms).
++ * \param[in] timeout   How long to wait for the operation to complete (in ms)
+  * \param[in] tolerance If a successful action for \p target happened within
+  *                      this many ms, return 0 without performing the action
+- *                      again.
++ *                      again
+  * \param[in] delay     Apply a fencing delay. Value -1 means disable also any
+- *                      static/random fencing delays from pcmk_delay_base/max.
++ *                      static/random fencing delays from pcmk_delay_base/max
+  * \param[out] reason   If not NULL, where to put descriptive failure reason
+  *
+  * \return Standard Pacemaker return code
+  * \note If \p reason is not NULL, the caller is responsible for freeing its
+  *       returned value.
+  */
+-int pcmk_fence_action(stonith_t *st, const char *target, const char *action,
+-                      const char *name, unsigned int timeout, unsigned int tolerance,
+-                      int delay, char **reason);
++int pcmk_request_fencing(stonith_t *st, const char *target, const char *action,
++                         const char *name, unsigned int timeout,
++                         unsigned int tolerance, int delay, char **reason);
+ 
+ /*!
+  * \brief List the fencing operations that have occurred for a specific node.
+diff --git a/include/pcmki/pcmki_fence.h b/include/pcmki/pcmki_fence.h
+index c3da0361d7..e3a7e27264 100644
+--- a/include/pcmki/pcmki_fence.h
++++ b/include/pcmki/pcmki_fence.h
+@@ -13,14 +13,14 @@
+ #  include <crm/common/output_internal.h>
+ 
+ /*!
+- * \brief Perform a STONITH action.
++ * \brief Ask the cluster to perform fencing
+  *
+- * \note This is the internal version of pcmk_fence_action().  External users
++ * \note This is the internal version of pcmk_request_fencing(). External users
+  *       of the pacemaker API should use that function instead.
+  *
+- * \param[in] st        A connection to the STONITH API.
+- * \param[in] target    The node receiving the action.
+- * \param[in] action    The action to perform.
++ * \param[in] st        A connection to the fencer API
++ * \param[in] target    The node that should be fenced
++ * \param[in] action    The fencing action (on, off, reboot) to perform
+  * \param[in] name      Who requested the fence action?
+  * \param[in] timeout   How long to wait for the operation to complete (in ms).
+  * \param[in] tolerance If a successful action for \p target happened within
+@@ -34,9 +34,9 @@
+  * \note If \p reason is not NULL, the caller is responsible for freeing its
+  *       returned value.
+  */
+-int pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+-                       const char *name, unsigned int timeout, unsigned int tolerance,
+-                       int delay, char **reason);
++int pcmk__request_fencing(stonith_t *st, const char *target, const char *action,
++                          const char *name, unsigned int timeout,
++                          unsigned int tolerance, int delay, char **reason);
+ 
+ /*!
+  * \brief List the fencing operations that have occurred for a specific node.
+diff --git a/lib/pacemaker/pcmk_fence.c b/lib/pacemaker/pcmk_fence.c
+index dbf084fb6b..1b7feb54b2 100644
+--- a/lib/pacemaker/pcmk_fence.c
++++ b/lib/pacemaker/pcmk_fence.c
+@@ -137,9 +137,9 @@ async_fence_helper(gpointer user_data)
+ }
+ 
+ int
+-pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+-                   const char *name, unsigned int timeout, unsigned int tolerance,
+-                   int delay, char **reason)
++pcmk__request_fencing(stonith_t *st, const char *target, const char *action,
++                      const char *name, unsigned int timeout,
++                      unsigned int tolerance, int delay, char **reason)
+ {
+     crm_trigger_t *trig;
+ 
+@@ -169,12 +169,12 @@ pcmk__fence_action(stonith_t *st, const char *target, const char *action,
+ 
+ #ifdef BUILD_PUBLIC_LIBPACEMAKER
+ int
+-pcmk_fence_action(stonith_t *st, const char *target, const char *action,
+-                  const char *name, unsigned int timeout, unsigned int tolerance,
+-                  int delay, char **reason)
++pcmk_request_fencing(stonith_t *st, const char *target, const char *action,
++                     const char *name, unsigned int timeout,
++                     unsigned int tolerance, int delay, char **reason)
+ {
+-    return pcmk__fence_action(st, target, action, name, timeout, tolerance,
+-                              delay, reason);
++    return pcmk__request_fencing(st, target, action, name, timeout, tolerance,
++                                 delay, reason);
+ }
+ #endif
+ 
+diff --git a/tools/stonith_admin.c b/tools/stonith_admin.c
+index fdc7c46d49..56948b3875 100644
+--- a/tools/stonith_admin.c
++++ b/tools/stonith_admin.c
+@@ -570,18 +570,24 @@ main(int argc, char **argv)
+             break;
+ 
+         case 'B':
+-            rc = pcmk__fence_action(st, target, "reboot", name, options.timeout*1000,
+-                                    options.tolerance*1000, options.delay, NULL);
++            rc = pcmk__request_fencing(st, target, "reboot", name,
++                                       options.timeout * 1000,
++                                       options.tolerance * 1000,
++                                       options.delay, NULL);
+             break;
+ 
+         case 'F':
+-            rc = pcmk__fence_action(st, target, "off", name, options.timeout*1000,
+-                                    options.tolerance*1000, options.delay, NULL);
++            rc = pcmk__request_fencing(st, target, "off", name,
++                                       options.timeout * 1000,
++                                       options.tolerance * 1000,
++                                       options.delay, NULL);
+             break;
+ 
+         case 'U':
+-            rc = pcmk__fence_action(st, target, "on", name, options.timeout*1000,
+-                                    options.tolerance*1000, options.delay, NULL);
++            rc = pcmk__request_fencing(st, target, "on", name,
++                                       options.timeout * 1000,
++                                       options.tolerance * 1000,
++                                       options.delay, NULL);
+             break;
+ 
+         case 'h':
+-- 
+2.27.0
+
+
+From 247eb303df934944c0b72b162bb661cee6e0ed8b Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 10 Dec 2021 15:52:37 -0600
+Subject: [PATCH 04/11] Refactor: tools: drop unnecessary string duplication in
+ stonith_admin
+
+---
+ tools/stonith_admin.c | 11 ++++-------
+ 1 file changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/tools/stonith_admin.c b/tools/stonith_admin.c
+index 56948b3875..c11e302e76 100644
+--- a/tools/stonith_admin.c
++++ b/tools/stonith_admin.c
+@@ -360,8 +360,6 @@ main(int argc, char **argv)
+ 
+     pcmk__cli_init_logging("stonith_admin", args->verbosity);
+ 
+-    name = strdup(crm_system_name);
+-
+     rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
+     if (rc != pcmk_rc_ok) {
+         exit_code = CRM_EX_ERROR;
+@@ -496,7 +494,7 @@ main(int argc, char **argv)
+     if (st == NULL) {
+         rc = -ENOMEM;
+     } else if (!no_connect) {
+-        rc = st->cmds->connect(st, name, NULL);
++        rc = st->cmds->connect(st, crm_system_name, NULL);
+     }
+     if (rc < 0) {
+         out->err(out, "Could not connect to fencer: %s", pcmk_strerror(rc));
+@@ -570,21 +568,21 @@ main(int argc, char **argv)
+             break;
+ 
+         case 'B':
+-            rc = pcmk__request_fencing(st, target, "reboot", name,
++            rc = pcmk__request_fencing(st, target, "reboot", crm_system_name,
+                                        options.timeout * 1000,
+                                        options.tolerance * 1000,
+                                        options.delay, NULL);
+             break;
+ 
+         case 'F':
+-            rc = pcmk__request_fencing(st, target, "off", name,
++            rc = pcmk__request_fencing(st, target, "off", crm_system_name,
+                                        options.timeout * 1000,
+                                        options.tolerance * 1000,
+                                        options.delay, NULL);
+             break;
+ 
+         case 'U':
+-            rc = pcmk__request_fencing(st, target, "on", name,
++            rc = pcmk__request_fencing(st, target, "on", crm_system_name,
+                                        options.timeout * 1000,
+                                        options.tolerance * 1000,
+                                        options.delay, NULL);
+@@ -619,7 +617,6 @@ main(int argc, char **argv)
+         out->finish(out, exit_code, true, NULL);
+         pcmk__output_free(out);
+     }
+-    free(name);
+     stonith_key_value_freeall(options.params, 1, 1);
+ 
+     if (st != NULL) {
+-- 
+2.27.0
+
+
+From a7888bf6868d8d9d9c77f65ae9983cf748bb0548 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 10 Dec 2021 15:56:34 -0600
+Subject: [PATCH 05/11] Refactor: tools: functionize requesting fencing in
+ stonith_admin
+
+... to reduce code duplication and improve readability
+---
+ tools/stonith_admin.c | 27 +++++++++++++++------------
+ 1 file changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/tools/stonith_admin.c b/tools/stonith_admin.c
+index c11e302e76..f738a9c888 100644
+--- a/tools/stonith_admin.c
++++ b/tools/stonith_admin.c
+@@ -331,6 +331,18 @@ build_arg_context(pcmk__common_args_t *args, GOptionGroup **group) {
+     return context;
+ }
+ 
++// \return Standard Pacemaker return code
++static int
++request_fencing(stonith_t *st, const char *target, const char *command)
++{
++    int rc = pcmk__request_fencing(st, target, command, crm_system_name,
++                                       options.timeout * 1000,
++                                       options.tolerance * 1000,
++                                       options.delay, NULL);
++
++    return rc;
++}
++
+ int
+ main(int argc, char **argv)
+ {
+@@ -568,24 +580,15 @@ main(int argc, char **argv)
+             break;
+ 
+         case 'B':
+-            rc = pcmk__request_fencing(st, target, "reboot", crm_system_name,
+-                                       options.timeout * 1000,
+-                                       options.tolerance * 1000,
+-                                       options.delay, NULL);
++            rc = request_fencing(st, target, "reboot");
+             break;
+ 
+         case 'F':
+-            rc = pcmk__request_fencing(st, target, "off", crm_system_name,
+-                                       options.timeout * 1000,
+-                                       options.tolerance * 1000,
+-                                       options.delay, NULL);
++            rc = request_fencing(st, target, "off");
+             break;
+ 
+         case 'U':
+-            rc = pcmk__request_fencing(st, target, "on", crm_system_name,
+-                                       options.timeout * 1000,
+-                                       options.tolerance * 1000,
+-                                       options.delay, NULL);
++            rc = request_fencing(st, target, "on");
+             break;
+ 
+         case 'h':
+-- 
+2.27.0
+
+
+From 2da32df780983ec1197e857eed5eeb5bf1101889 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 10 Dec 2021 16:05:19 -0600
+Subject: [PATCH 06/11] Feature: tools: display failure reasons for
+ stonith_admin fencing commands
+
+Previously, stonith_admin's --fence/--unfence/--reboot options did not output
+any error message on failure. Now, they do, including the exit reason, if
+available.
+---
+ tools/stonith_admin.c | 30 +++++++++++++++++++++++++-----
+ 1 file changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/tools/stonith_admin.c b/tools/stonith_admin.c
+index f738a9c888..5590faf11e 100644
+--- a/tools/stonith_admin.c
++++ b/tools/stonith_admin.c
+@@ -333,13 +333,33 @@ build_arg_context(pcmk__common_args_t *args, GOptionGroup **group) {
+ 
+ // \return Standard Pacemaker return code
+ static int
+-request_fencing(stonith_t *st, const char *target, const char *command)
++request_fencing(stonith_t *st, const char *target, const char *command,
++                GError **error)
+ {
++    char *reason = NULL;
+     int rc = pcmk__request_fencing(st, target, command, crm_system_name,
+                                        options.timeout * 1000,
+                                        options.tolerance * 1000,
+-                                       options.delay, NULL);
++                                       options.delay, &reason);
+ 
++    if (rc != pcmk_rc_ok) {
++        const char *rc_str = pcmk_rc_str(rc);
++
++        // If reason is identical to return code string, don't display it twice
++        if (pcmk__str_eq(rc_str, reason, pcmk__str_none)) {
++            free(reason);
++            reason = NULL;
++        }
++
++        g_set_error(error, PCMK__RC_ERROR, rc,
++                    "Couldn't %sfence %s: %s%s%s%s",
++                    ((strcmp(command, "on") == 0)? "un" : ""),
++                    target, pcmk_rc_str(rc),
++                    ((reason == NULL)? "" : " ("),
++                    ((reason == NULL)? "" : reason),
++                    ((reason == NULL)? "" : ")"));
++    }
++    free(reason);
+     return rc;
+ }
+ 
+@@ -580,15 +600,15 @@ main(int argc, char **argv)
+             break;
+ 
+         case 'B':
+-            rc = request_fencing(st, target, "reboot");
++            rc = request_fencing(st, target, "reboot", &error);
+             break;
+ 
+         case 'F':
+-            rc = request_fencing(st, target, "off");
++            rc = request_fencing(st, target, "off", &error);
+             break;
+ 
+         case 'U':
+-            rc = request_fencing(st, target, "on");
++            rc = request_fencing(st, target, "on", &error);
+             break;
+ 
+         case 'h':
+-- 
+2.27.0
+
+
+From 2d99eba4c326d3b13dbbe446971ea5febd5d05be Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Fri, 10 Dec 2021 16:08:49 -0600
+Subject: [PATCH 07/11] Feature: libpacemaker: return exit reason for fencer
+ connection failures
+
+... instead of outputting to stderr directly, so that the caller (i.e.
+stonith_admin) can output the error in the correct output format.
+---
+ lib/pacemaker/pcmk_fence.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/lib/pacemaker/pcmk_fence.c b/lib/pacemaker/pcmk_fence.c
+index 1b7feb54b2..d17b07cda2 100644
+--- a/lib/pacemaker/pcmk_fence.c
++++ b/lib/pacemaker/pcmk_fence.c
+@@ -104,10 +104,9 @@ async_fence_helper(gpointer user_data)
+     int rc = stonith_api_connect_retry(st, async_fence_data.name, 10);
+ 
+     if (rc != pcmk_ok) {
+-        fprintf(stderr, "Could not connect to fencer: %s\n", pcmk_strerror(rc));
+         g_main_loop_quit(mainloop);
+         pcmk__set_result(&async_fence_data.result, CRM_EX_ERROR,
+-                         PCMK_EXEC_NOT_CONNECTED, NULL);
++                         PCMK_EXEC_NOT_CONNECTED, pcmk_strerror(rc));
+         return TRUE;
+     }
+ 
+-- 
+2.27.0
+
+
+From 4480ef0602f47450bdddfbde360a6a8327710927 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 17 Jan 2022 09:39:39 -0600
+Subject: [PATCH 08/11] Low: libpacemaker: compare fence action names
+ case-sensitively
+
+---
+ lib/pacemaker/pcmk_fence.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/pacemaker/pcmk_fence.c b/lib/pacemaker/pcmk_fence.c
+index d17b07cda2..2a8f50a555 100644
+--- a/lib/pacemaker/pcmk_fence.c
++++ b/lib/pacemaker/pcmk_fence.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2009-2021 the Pacemaker project contributors
++ * Copyright 2009-2022 the Pacemaker project contributors
+  *
+  * The version control history for this file may have further details.
+  *
+@@ -77,7 +77,7 @@ static void
+ notify_callback(stonith_t * st, stonith_event_t * e)
+ {
+     if (pcmk__str_eq(async_fence_data.target, e->target, pcmk__str_casei)
+-        && pcmk__str_eq(async_fence_data.action, e->action, pcmk__str_casei)) {
++        && pcmk__str_eq(async_fence_data.action, e->action, pcmk__str_none)) {
+ 
+         pcmk__set_result(&async_fence_data.result,
+                          stonith__event_exit_status(e),
+@@ -549,7 +549,7 @@ pcmk__reduce_fence_history(stonith_history_t *history)
+             if ((hp->state == st_done) || (hp->state == st_failed)) {
+                 /* action not in progress */
+                 if (pcmk__str_eq(hp->target, np->target, pcmk__str_casei) &&
+-                    pcmk__str_eq(hp->action, np->action, pcmk__str_casei) &&
++                    pcmk__str_eq(hp->action, np->action, pcmk__str_none) &&
+                     (hp->state == np->state) &&
+                     ((hp->state == st_done) ||
+                      pcmk__str_eq(hp->delegate, np->delegate, pcmk__str_casei))) {
+-- 
+2.27.0
+
+
+From fe4c65a3b9e715c2b535709f989f2369d3637b78 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 17 Jan 2022 09:45:24 -0600
+Subject: [PATCH 09/11] Refactor: libpacemaker: avoid unnecessary string
+ duplication
+
+... and don't leave any dynamic memory hanging around
+---
+ lib/pacemaker/pcmk_fence.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/lib/pacemaker/pcmk_fence.c b/lib/pacemaker/pcmk_fence.c
+index 2a8f50a555..260fa5ab8e 100644
+--- a/lib/pacemaker/pcmk_fence.c
++++ b/lib/pacemaker/pcmk_fence.c
+@@ -141,6 +141,7 @@ pcmk__request_fencing(stonith_t *st, const char *target, const char *action,
+                       unsigned int tolerance, int delay, char **reason)
+ {
+     crm_trigger_t *trig;
++    int rc = pcmk_rc_ok;
+ 
+     async_fence_data.st = st;
+     async_fence_data.name = strdup(name);
+@@ -160,10 +161,14 @@ pcmk__request_fencing(stonith_t *st, const char *target, const char *action,
+ 
+     free(async_fence_data.name);
+ 
+-    if ((reason != NULL) && (async_fence_data.result.exit_reason != NULL)) {
+-        *reason = strdup(async_fence_data.result.exit_reason);
++    if (reason != NULL) {
++        // Give the caller ownership of the exit reason
++        *reason = async_fence_data.result.exit_reason;
++        async_fence_data.result.exit_reason = NULL;
+     }
+-    return stonith__result2rc(&async_fence_data.result);
++    rc = stonith__result2rc(&async_fence_data.result);
++    pcmk__reset_result(&async_fence_data.result);
++    return rc;
+ }
+ 
+ #ifdef BUILD_PUBLIC_LIBPACEMAKER
+-- 
+2.27.0
+
+
+From 7b7af07796f05a1adabdac655582be2e17106f81 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 17 Jan 2022 10:07:10 -0600
+Subject: [PATCH 10/11] Doc: libpacemaker: improve pcmk__request_fencing()
+ doxygen block
+
+---
+ include/pacemaker.h         |  6 ++++--
+ include/pcmki/pcmki_fence.h | 15 +++++++++------
+ 2 files changed, 13 insertions(+), 8 deletions(-)
+
+diff --git a/include/pacemaker.h b/include/pacemaker.h
+index e581f975a9..266a844892 100644
+--- a/include/pacemaker.h
++++ b/include/pacemaker.h
+@@ -187,8 +187,10 @@ int pcmk_list_nodes(xmlNodePtr *xml, char *node_types);
+  * \param[in] tolerance If a successful action for \p target happened within
+  *                      this many ms, return 0 without performing the action
+  *                      again
+- * \param[in] delay     Apply a fencing delay. Value -1 means disable also any
+- *                      static/random fencing delays from pcmk_delay_base/max
++ * \param[in] delay     Apply this delay (in milliseconds) before initiating the
++ *                      fencing action (a value of -1 applies no delay and also
++ *                      disables any fencing delay from pcmk_delay_base and
++ *                      pcmk_delay_max)
+  * \param[out] reason   If not NULL, where to put descriptive failure reason
+  *
+  * \return Standard Pacemaker return code
+diff --git a/include/pcmki/pcmki_fence.h b/include/pcmki/pcmki_fence.h
+index e3a7e27264..4a2fe3c481 100644
+--- a/include/pcmki/pcmki_fence.h
++++ b/include/pcmki/pcmki_fence.h
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2019-2021 the Pacemaker project contributors
++ * Copyright 2019-2022 the Pacemaker project contributors
+  *
+  * The version control history for this file may have further details.
+  *
+@@ -22,17 +22,20 @@
+  * \param[in] target    The node that should be fenced
+  * \param[in] action    The fencing action (on, off, reboot) to perform
+  * \param[in] name      Who requested the fence action?
+- * \param[in] timeout   How long to wait for the operation to complete (in ms).
++ * \param[in] timeout   How long to wait for the operation to complete (in ms)
+  * \param[in] tolerance If a successful action for \p target happened within
+- *                      this many ms, return 0 without performing the action
+- *                      again.
+- * \param[in] delay     Apply a fencing delay. Value -1 means disable also any
+- *                      static/random fencing delays from pcmk_delay_base/max
++ *                      this many milliseconds, return success without
++ *                      performing the action again
++ * \param[in] delay     Apply this delay (in milliseconds) before initiating the
++ *                      fencing action (a value of -1 applies no delay and also
++ *                      disables any fencing delay from pcmk_delay_base and
++ *                      pcmk_delay_max)
+  * \param[out] reason   If not NULL, where to put descriptive failure reason
+  *
+  * \return Standard Pacemaker return code
+  * \note If \p reason is not NULL, the caller is responsible for freeing its
+  *       returned value.
++ * \todo delay is eventually used with g_timeout_add() and should be guint
+  */
+ int pcmk__request_fencing(stonith_t *st, const char *target, const char *action,
+                           const char *name, unsigned int timeout,
+-- 
+2.27.0
+
+
+From 61fb7271712e1246eb6d9472dc1afc7cd10e0a79 Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Mon, 17 Jan 2022 10:18:02 -0600
+Subject: [PATCH 11/11] Fix: tools: get stonith_admin -T option working again
+
+Regression introduced in 2.0.3 by 3910b6fec
+
+This reverts commit 247eb303df934944c0b72b162bb661cee6e0ed8b
+("Refactor: tools: drop unnecessary string duplication in stonith_admin")
+and fixes a regression introduced when stonith_admin was converted to use
+GOption.
+
+The -T option is intended to override the client name passed to the fencer API,
+but the client name was set to the default (crm_system_name) after option
+processing had already been done, so any value for -T was overwritten by the
+default, and its memory was leaked.
+
+This commit sets the default only if -T was not used.
+---
+ tools/stonith_admin.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/tools/stonith_admin.c b/tools/stonith_admin.c
+index 5590faf11e..54774b6fee 100644
+--- a/tools/stonith_admin.c
++++ b/tools/stonith_admin.c
+@@ -337,10 +337,10 @@ request_fencing(stonith_t *st, const char *target, const char *command,
+                 GError **error)
+ {
+     char *reason = NULL;
+-    int rc = pcmk__request_fencing(st, target, command, crm_system_name,
+-                                       options.timeout * 1000,
+-                                       options.tolerance * 1000,
+-                                       options.delay, &reason);
++    int rc = pcmk__request_fencing(st, target, command, name,
++                                   options.timeout * 1000,
++                                   options.tolerance * 1000,
++                                   options.delay, &reason);
+ 
+     if (rc != pcmk_rc_ok) {
+         const char *rc_str = pcmk_rc_str(rc);
+@@ -392,6 +392,10 @@ main(int argc, char **argv)
+ 
+     pcmk__cli_init_logging("stonith_admin", args->verbosity);
+ 
++    if (name == NULL) {
++        name = strdup(crm_system_name);
++    }
++
+     rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
+     if (rc != pcmk_rc_ok) {
+         exit_code = CRM_EX_ERROR;
+@@ -526,7 +530,7 @@ main(int argc, char **argv)
+     if (st == NULL) {
+         rc = -ENOMEM;
+     } else if (!no_connect) {
+-        rc = st->cmds->connect(st, crm_system_name, NULL);
++        rc = st->cmds->connect(st, name, NULL);
+     }
+     if (rc < 0) {
+         out->err(out, "Could not connect to fencer: %s", pcmk_strerror(rc));
+@@ -640,6 +644,7 @@ main(int argc, char **argv)
+         out->finish(out, exit_code, true, NULL);
+         pcmk__output_free(out);
+     }
++    free(name);
+     stonith_key_value_freeall(options.params, 1, 1);
+ 
+     if (st != NULL) {
+-- 
+2.27.0
+
