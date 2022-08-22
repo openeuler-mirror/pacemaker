@@ -1,0 +1,39 @@
+From f491d9d5a7ed554fed985de356bb085fdec3421c Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Tue, 7 Dec 2021 09:01:00 -0600
+Subject: [PATCH] Fix: fencer: avoid memory leak when broadcasting history
+ differences
+
+Regression introduced in 2.1.0 by dbc27b2
+---
+ daemons/fenced/fenced_history.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/daemons/fenced/fenced_history.c b/daemons/fenced/fenced_history.c
+index bc159383c..a9c57dc86 100644
+--- a/daemons/fenced/fenced_history.c
++++ b/daemons/fenced/fenced_history.c
+@@ -484,8 +484,6 @@ stonith_fence_history(xmlNode *msg, xmlNode **output,
+                    !pcmk__str_eq(remote_peer, stonith_our_uname, pcmk__str_casei)) {
+             xmlNode *history = get_xpath_object("//" F_STONITH_HISTORY_LIST,
+                                                 msg, LOG_NEVER);
+-            GHashTable *received_history =
+-                history?stonith_xml_history_to_list(history):NULL;
+ 
+             /* either a broadcast created directly upon stonith-API request
+             * or a diff as response to such a thing
+@@ -497,6 +495,11 @@ stonith_fence_history(xmlNode *msg, xmlNode **output,
+             if (!history ||
+                 !crm_is_true(crm_element_value(history,
+                                                F_STONITH_DIFFERENTIAL))) {
++                GHashTable *received_history = NULL;
++
++                if (history != NULL) {
++                    received_history = stonith_xml_history_to_list(history);
++                }
+                 out_history =
+                     stonith_local_history_diff_and_merge(received_history, TRUE, NULL);
+                 if (out_history) {
+-- 
+2.27.0
+
