@@ -11,23 +11,24 @@
 ## GitHub entity that distributes source (for ease of using a fork)
 %global github_owner ClusterLabs
 
+## What to use as the OCF resource agent root directory
+%global ocf_root %{_prefix}/lib/ocf
+
 ## Upstream pacemaker version, and its package version (specversion
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
-%global pcmkversion 2.0.5
+%global pcmkversion 2.1.2
 %global specversion 1
 
-## Upstream commit (or git tag, such as "Pacemaker-" plus the
-## {pcmkversion} macro for an official release) to use for this package
-%global commit Pacemaker-2.0.5
+## Upstream commit (full commit ID, abbreviated commit ID, or tag) to build
+%global commit ada5c3b36e2adf1703d54d39f40a4b8628eca175
 ## Since git v2.11, the extent of abbreviation is autoscaled by default
 ## (used to be constant of 7), so we need to convey it for non-tags, too.
 %global commit_abbrev 9
 
 ## Nagios source control identifiers
 %global nagios_name nagios-agents-metadata
-%global nagios_hash 105ab8a7b2c16b9a29cf1c1596b80136eeef332b
-%global nagios_archive_github_url %{nagios_hash}#/%{nagios_name}-%{nagios_hash}.tar.gz
+%global nagios_hash 105ab8a
 
 # Define globals for convenient use later
 
@@ -41,20 +42,14 @@
 
 ## Portion of export/dist tarball name after "pacemaker-", and release version
 %if 0%{tag_release}
-%define archive_version %{commit}
+%define archive_version %(c=%{commit}; echo ${c:10})
 %define archive_github_url %{commit}#/%{name}-%{archive_version}.tar.gz
-%define pcmk_release %(c=%{commit}; case $c in *-rc[[:digit:]]*%{rparen}
-                       echo 0.%{specversion}.${c: -3} ;;
-                       *%{rparen} echo %{specversion} ;; esac)
 %else
 %define archive_version %(c=%{commit}; echo ${c:0:%{commit_abbrev}})
 %define archive_github_url %{archive_version}#/%{name}-%{archive_version}.tar.gz
-%if %{with pre_release}
-%define pcmk_release 0.%{specversion}.%{archive_version}.git
-%else
-%define pcmk_release %{specversion}.%{archive_version}.git
 %endif
-%endif
+### Always use a simple release number
+%define pcmk_release %{specversion}
 
 ## Heuristic used to infer bleeding-edge deployments that are
 ## less likely to have working versions of the documentation tools
@@ -63,6 +58,17 @@
 ## Base GnuTLS cipher priorities (presumably only the initial, required keyword)
 ## overridable with "rpmbuild --define 'pcmk_gnutls_priorities PRIORITY-SPEC'"
 %define gnutls_priorities %{?pcmk_gnutls_priorities}%{!?pcmk_gnutls_priorities:@SYSTEM}
+
+
+
+### Use 2.0-style output when other distro packages don't support current output
+%global compat20 --enable-compat-2.0
+
+### Default concurrent-fencing to true when distro prefers that
+%global concurrent_fencing --with-concurrent-fencing-default=true
+
+### Default resource-stickiness to 1 when distro prefers that
+%global resource_stickiness --with-resource-stickiness-default=1
 
 # Python-related definitions
 
@@ -137,9 +143,33 @@ Url:           https://www.clusterlabs.org
 
 # Hint: use "spectool -s 0 pacemaker.spec" (rpmdevtools) to check the final URL
 Source0:       https://codeload.github.com/%{github_owner}/%{name}/tar.gz/%{archive_github_url}
-Source1:       https://codeload.github.com/%{github_owner}/%{nagios_name}/tar.gz/%{nagios_archive_github_url}
-# ---
-Patch0:        fix-function-declaration-error.patch
+Source1:       nagios-agents-metadata-%{nagios_hash}.tar.gz
+
+# upstream commits
+Patch1:        001-acl-group-schema.patch
+Patch2:        002-fencing-reasons.patch
+Patch3:        003-fencing-reasons.patch
+Patch4:        004-systemd-metadata.patch
+Patch5:        005-fencing-reasons.patch
+Patch6:        006-stateful-metadata.patch
+Patch7:        007-memory-leak.patch
+Patch8:        008-fencing-history.patch
+Patch9:        009-fencing-reasons.patch
+Patch10:       010-probe-failures.patch
+Patch11:       011-fencing-reasons.patch
+Patch12:       012-notify-crash.patch
+Patch13:       013-probe-failures.patch
+Patch14:       014-pcmk_delay_base.patch
+Patch15:       015-fencing-reasons.patch
+Patch16:       016-fencing-crash.patch
+Patch17:       017-fencing-reasons.patch
+Patch18:       018-failure-messages.patch
+Patch19:       019-corosync-tracking.patch
+Patch20:       020-systemd-unit.patch
+Patch21:       021-failure-messages.patch
+Patch22:       022-memory-leak.patch
+Patch23:       023-regression.patch
+
 
 Requires:      resource-agents
 Requires:      %{name}-libs = %{version}-%{release}
@@ -151,41 +181,40 @@ Requires:      %{name}-cli = %{version}-%{release}
 Requires:      %{python_name} >= %{python_min}
 BuildRequires: make
 BuildRequires: %{python_name}-devel >= %{python_min}
-
+BuildRequires: libcmocka-devel
 # Pacemaker requires a minimum libqb functionality
-Requires:      libqb >= 0.13.0
-BuildRequires: libqb-devel >= 0.13.0
+Requires:      libqb >= 0.17.0
+BuildRequires: libqb-devel >= 0.17.0
 
 # Basics required for the build (even if usually satisfied through other BRs)
 BuildRequires: coreutils findutils grep sed
 
 # Required for core functionality
 BuildRequires: automake autoconf gcc libtool pkgconfig libtool-ltdl-devel
-BuildRequires: pkgconfig(glib-2.0) >= 2.16
+BuildRequires: pkgconfig(glib-2.0) >= 2.42
 BuildRequires: libxml2-devel libxslt-devel libuuid-devel
 BuildRequires: bzip2-devel
 
 # Enables optional functionality
-BuildRequires: ncurses-devel docbook-style-xsl
-BuildRequires: help2man gnutls-devel pam-devel pkgconfig(dbus-1)
+# BuildRequires: docbook-style-xsl libgnutls-devel docbook-xsl-stylesheets
+BuildRequires: ncurses-devel 
+BuildRequires: help2man gnutls-devel pam-devel pkgconfig(dbus-1) 
 
 BuildRequires: pkgconfig(systemd)
 
-Requires:      corosync >= 2.0.0
-BuildRequires: corosynclib-devel >= 2.0.0
+Requires:      corosync >= 3.1.1
+BuildRequires: corosynclib-devel >= 3.1.1
 #XXX
 #BuildRequires: pkgconfig(libcpg)
 #BuildRequires: pkgconfig(libcfg)
 
-## (note no avoiding effect when building through non-customized mock)
-# %if !%{bleeding}
-# %if %{with doc}
-# BuildRequires: asciidoc inkscape publican
-# %endif
-# %endif
+%if %{with stonithd}
+BuildRequires: libglue-devel
+%endif
+
 
 # git-style patch application
-# BuildRequires: git
+BuildRequires: git
 
 Provides:      pcmk-cluster-manager = %{version}-%{release}
 Provides:      pcmk-cluster-manager = %{version}-%{release}
@@ -211,7 +240,6 @@ Available rpmbuild rebuild options:
 License:       GPLv2+ and LGPLv2+
 Summary:       Command line tools for controlling Pacemaker clusters
 Requires:      %{name}-libs = %{version}-%{release}
-Recommends:    pcmk-cluster-manager = %{version}-%{release}
 # For crm_report
 Recommends:    tar
 Recommends:    bzip2
@@ -234,7 +262,7 @@ Summary:       Core Pacemaker libraries
 Requires(pre): shadow-utils
 Requires:      %{name}-schemas = %{version}-%{release}
 # sbd 1.4.0+ supports the libpe_status API for pe_working_set_t
-Conflicts:     sbd < 1.4.0
+Conflicts:     sbd < 1.4.2
 
 %description libs
 Pacemaker is an advanced, scalable High-Availability cluster resource
@@ -298,7 +326,8 @@ Summary:       Test framework for cluster-related technologies like Pacemaker
 Requires:      %{python_name} >= %{python_min}
 Requires:      %{python_path}
 Requires:      %{name}-libs = %{version}-%{release}
-Requires:      procps-ng
+Requires:      %{name}-cli = %{version}-%{release}
+Requires:      procps
 Requires:      psmisc
 BuildArch:     noarch
 
@@ -311,8 +340,6 @@ Test framework for cluster-related technologies like Pacemaker
 License:       CC-BY-SA-4.0
 Summary:       Documentation for Pacemaker
 BuildArch:     noarch
-Conflicts:     %{name}-libs > %{version}-%{release}
-Conflicts:     %{name}-libs < %{version}-%{release}
 
 %description   doc
 Documentation for Pacemaker.
@@ -349,7 +376,29 @@ monitor resources.
 
 %prep
 %setup -q -a 1 -n %{name}-%{archive_version}
-%patch0
+%patch1 -p1
+%patch2 -p1
+%patch3 -p1
+%patch4 -p1
+%patch5 -p1
+%patch6 -p1
+%patch7 -p1
+%patch8 -p1
+%patch9 -p1
+%patch10 -p1
+%patch11 -p1
+%patch12 -p1
+%patch13 -p1
+%patch14 -p1
+%patch15 -p1
+%patch16 -p1
+%patch17 -p1
+%patch18 -p1
+%patch19 -p1
+%patch20 -p1
+%patch21 -p1
+%patch22 -p1
+%patch23 -p1
 
 %build
 export systemdsystemunitdir=%{?_unitdir}%{!?_unitdir:no}
@@ -409,9 +458,12 @@ make install \
   DESTDIR=%{buildroot} V=1 docdir=%{pcmk_docdir} \
   %{?_python_bytecompile_extra:%{?py_byte_compile:am__py_compile=true}}
 
-mkdir -p ${RPM_BUILD_ROOT}%{_sysconfdir}/sysconfig
-install -m 644 daemons/pacemakerd/pacemaker.sysconfig ${RPM_BUILD_ROOT}%{_sysconfdir}/sysconfig/pacemaker
-install -m 644 tools/crm_mon.sysconfig ${RPM_BUILD_ROOT}%{_sysconfdir}/sysconfig/crm_mon
+%if %{with upstart_job}
+mkdir -p ${RPM_BUILD_ROOT}%{_sysconfdir}/init
+install -m 644 pacemakerd/pacemaker.upstart ${RPM_BUILD_ROOT}%{_sysconfdir}/init/pacemaker.conf
+install -m 644 pacemakerd/pacemaker.combined.upstart ${RPM_BUILD_ROOT}%{_sysconfdir}/init/pacemaker.combined.conf
+install -m 644 tools/crm_mon.upstart ${RPM_BUILD_ROOT}%{_sysconfdir}/init/crm_mon.conf
+%endif
 
 mkdir -p %{buildroot}%{_datadir}/pacemaker/nagios/plugins-metadata
 for file in $(find %{nagios_name}-%{nagios_hash}/metadata -type f); do
@@ -443,7 +495,7 @@ rm -f %{buildroot}/%{_initrddir}/pacemaker
 rm -f %{buildroot}/%{_initrddir}/pacemaker_remote
 
 # Byte-compile Python sources where suitable and the distro procedures known
-%if %{defined py_byte_compile} && %{defined python_path}
+%if %{defined py_byte_compile} 
 %{py_byte_compile %{python_path} %{buildroot}%{_datadir}/pacemaker/tests}
 %if !%{defined _python_bytecompile_extra}
 %{py_byte_compile %{python_path} %{buildroot}%{python_site}/cts}
@@ -550,14 +602,12 @@ exit 0
 
 %{_sbindir}/crm_attribute
 %{_sbindir}/crm_master
+%{_sbindir}/fence_watchdog
 
-%doc %{_mandir}/man7/pacemaker-controld.*
-%doc %{_mandir}/man7/pacemaker-schedulerd.*
-%doc %{_mandir}/man7/pacemaker-fenced.*
-%doc %{_mandir}/man7/ocf_pacemaker_controld.*
-%doc %{_mandir}/man7/ocf_pacemaker_remote.*
+
 %doc %{_mandir}/man8/crm_attribute.*
 %doc %{_mandir}/man8/crm_master.*
+%doc %{_mandir}/man8/fence_watchdog.*
 %doc %{_mandir}/man8/pacemakerd.*
 
 %doc %{_datadir}/pacemaker/alerts
@@ -606,24 +656,16 @@ exit 0
 %{_datadir}/snmp/mibs/PCMK-MIB.txt
 
 %exclude /usr/lib/ocf/resource.d/pacemaker/controld
-%exclude /usr/lib/ocf/resource.d/pacemaker/o2cb
 %exclude /usr/lib/ocf/resource.d/pacemaker/remote
 
 %dir /usr/lib/ocf
 %dir /usr/lib/ocf/resource.d
 /usr/lib/ocf/resource.d/pacemaker
 
-%doc %{_mandir}/man7/*
-%exclude %{_mandir}/man7/pacemaker-controld.*
-%exclude %{_mandir}/man7/pacemaker-schedulerd.*
-%exclude %{_mandir}/man7/pacemaker-fenced.*
-%exclude %{_mandir}/man7/ocf_pacemaker_controld.*
-%exclude %{_mandir}/man7/ocf_pacemaker_o2cb.*
-%exclude %{_mandir}/man7/ocf_pacemaker_remote.*
 %doc %{_mandir}/man8/*
 %exclude %{_mandir}/man8/crm_attribute.*
 %exclude %{_mandir}/man8/crm_master.*
-%exclude %{_mandir}/man8/fence_legacy.*
+%exclude %{_mandir}/man8/fence_watchdog.*
 %exclude %{_mandir}/man8/pacemakerd.*
 %exclude %{_mandir}/man8/pacemaker-remoted.*
 
@@ -665,9 +707,7 @@ exit 0
 %{_unitdir}/pacemaker_remote.service
 
 %{_sbindir}/pacemaker-remoted
-%if %{with legacy_links}
 %{_sbindir}/pacemaker_remoted
-%endif
 %{_mandir}/man8/pacemaker-remoted.*
 %license licenses/GPLv2
 %doc COPYING
@@ -714,6 +754,9 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Tue Jul 26 2022 Bixiaoyan <bixiaoyan@kylinos.cn> - 2.1.2-1
+- upgrade to 2.1.2
+
 * Wed Feb 16 2022 jiangxinyu <jiangxinyu@kylinos.cn> - 2.0.5-1
 - upgrade to 2.0.5
 

@@ -1,0 +1,30 @@
+From 16928cfc69136bc56b1574bee9966e0d5de73abd Mon Sep 17 00:00:00 2001
+From: Ken Gaillot <kgaillot@redhat.com>
+Date: Wed, 26 Jan 2022 09:15:43 -0600
+Subject: [PATCH] Fix: controller: correctly match "node down" events
+
+regression introduced in 2.1.2 by 03ce7376e
+
+The symptom that led to this was that removing a remote node connection
+resource would lead to the remote node getting fenced when the connection stop
+was not recognized as an expected down event.
+---
+ daemons/controld/controld_te_events.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/daemons/controld/controld_te_events.c b/daemons/controld/controld_te_events.c
+index 36fd832ba0..1fd7129922 100644
+--- a/daemons/controld/controld_te_events.c
++++ b/daemons/controld/controld_te_events.c
+@@ -304,7 +304,7 @@ match_down_event(const char *target)
+              gIter2 = gIter2->next) {
+ 
+             match = (crm_action_t*)gIter2->data;
+-            if (pcmk_is_set(match->flags, pcmk__graph_action_confirmed)) {
++            if (pcmk_is_set(match->flags, pcmk__graph_action_executed)) {
+                 xpath_ret = xpath_search(match->xml, xpath);
+                 if (numXpathResults(xpath_ret) < 1) {
+                     match = NULL;
+-- 
+2.27.0
+
