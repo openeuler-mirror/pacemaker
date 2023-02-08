@@ -1,0 +1,35 @@
+From 9853f4d05a376062d60f2e4c90938e587992237b Mon Sep 17 00:00:00 2001
+From: Chris Lumens <clumens@redhat.com>
+Date: Mon, 27 Jun 2022 12:06:24 -0400
+Subject: [PATCH] Fix: tools: Don't output "(null)" in crm_attribute's quiet
+ mode.
+
+If the attribute queried for has no value, simply do not output
+anything.
+
+Regression in 2.1.3 introduced by 8c03553bbf
+
+Fixes T502
+See: rhbz#2099331
+---
+ tools/crm_attribute.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/tools/crm_attribute.c b/tools/crm_attribute.c
+index 0bd9dee..b1463f9 100644
+--- a/tools/crm_attribute.c
++++ b/tools/crm_attribute.c
+@@ -56,7 +56,9 @@ attribute_text(pcmk__output_t *out, va_list args)
+     char *host G_GNUC_UNUSED = va_arg(args, char *);
+ 
+     if (out->quiet) {
+-        pcmk__formatted_printf(out, "%s\n", value);
++        if (value != NULL) {
++            pcmk__formatted_printf(out, "%s\n", value);
++        }
+     } else {
+         out->info(out, "%s%s %s%s %s%s value=%s",
+                   scope ? "scope=" : "", scope ? scope : "",
+-- 
+1.8.3.1
+

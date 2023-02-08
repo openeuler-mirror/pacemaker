@@ -3,7 +3,6 @@
 ## User and group to use for nonprivileged services
 %global uname hacluster
 %global gname haclient
-%global hacluster_id 189
 
 ## Where to install Pacemaker documentation
 %global pcmk_docdir %{_docdir}/%{name}
@@ -17,18 +16,58 @@
 ## Upstream pacemaker version, and its package version (specversion
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
-%global pcmkversion 2.1.2
+%global pcmkversion 2.1.4
 %global specversion 1
 
 ## Upstream commit (full commit ID, abbreviated commit ID, or tag) to build
-%global commit ada5c3b36e2adf1703d54d39f40a4b8628eca175
+%global commit dc6eb4362e67c1497a413434eba097063bf1ef83
+
 ## Since git v2.11, the extent of abbreviation is autoscaled by default
 ## (used to be constant of 7), so we need to convey it for non-tags, too.
 %global commit_abbrev 9
 
+# Define conditionals so that "rpmbuild --with <feature>" and
+# "rpmbuild --without <feature>" can enable and disable specific features
+
+## Add option to enable support for stonith/external fencing agents
+%bcond_with stonithd
+
+## Add option for whether to support storing sensitive information outside CIB
+%bcond_with cibsecrets
+
+## Add option to enable Native Language Support (experimental)
+%bcond_with nls
+
+## Add option to create binaries suitable for use with profiling tools
+%bcond_with profiling
+
+%bcond_without doc
+
+## Add option to default to start-up synchronization with SBD.
+##
+## If enabled, SBD *MUST* be built to default similarly, otherwise data
+## corruption could occur. Building both Pacemaker and SBD to default
+## to synchronization improves safety, without requiring higher-level tools
+## to be aware of the setting or requiring users to modify configurations
+## after upgrading to versions that support synchronization.
+%bcond_without sbd_sync
+
+## Add option to prefix package version with "0."
+## (so later "official" packages will be considered updates)
+%bcond_without pre_release
+
+## NOTE: skip --with upstart_job
+
+## Add option to turn off hardening of libraries and daemon executables
+%bcond_without hardening
+
+## Add option to enable (or disable, on RHEL 8) links for legacy daemon names
+%bcond_without legacy_links
+
 ## Nagios source control identifiers
 %global nagios_name nagios-agents-metadata
-%global nagios_hash 105ab8a
+%global nagios_hash 105ab8a7b2c16b9a29cf1c1596b80136eeef332b
+%global nagios_archive_github_url %{nagios_hash}#/%{nagios_name}-%{nagios_hash}.tar.gz
 
 # Define globals for convenient use later
 
@@ -51,15 +90,25 @@
 ### Always use a simple release number
 %define pcmk_release %{specversion}
 
-## Heuristic used to infer bleeding-edge deployments that are
-## less likely to have working versions of the documentation tools
-%define bleeding %(test ! -e /etc/yum.repos.d/fedora-rawhide.repo; echo $?)
-
 ## Base GnuTLS cipher priorities (presumably only the initial, required keyword)
 ## overridable with "rpmbuild --define 'pcmk_gnutls_priorities PRIORITY-SPEC'"
 %define gnutls_priorities %{?pcmk_gnutls_priorities}%{!?pcmk_gnutls_priorities:@SYSTEM}
 
+## Different distros name certain packages differently
+## (note: corosync libraries also differ, but all provide corosync-devel)
+%global pkgname_libtool_devel libtool-ltdl-devel
+%global pkgname_libtool_devel_arch libtool-ltdl-devel
+%global pkgname_bzip2_devel bzip2-devel
+%global pkgname_docbook_xsl docbook-style-xsl
+%global pkgname_gettext gettext-devel
+%global pkgname_gnutls_devel gnutls-devel
+%global pkgname_shadow_utils shadow-utils
+%global pkgname_procps procps-ng
+%global pkgname_glue_libs cluster-glue-libs
+%global pkgname_pcmk_libs %{name}-libs
+%global hacluster_id 189
 
+## Distro-specific configuration choices
 
 ### Use 2.0-style output when other distro packages don't support current output
 %global compat20 --enable-compat-2.0
@@ -85,44 +134,11 @@
                             sed -e 's!/usr/lib[^[:space:]]*/brp-python-bytecompile[[:space:]].*$!!g'; })
 %endif
 
-## Values that differ by Python major version
-%global python_path /usr/bin/python%{?python3_pkgversion}%{!?python3_pkgversion:3}
+## Prefer Python 3 definitions explicitly, in case 2 is also available
 %global python_name python3
-%global python_min 3.2
+%global python_path %{__python3}
 %define python_site %{?python3_sitelib}%{!?python3_sitelib:%(
   %{python_path} -c 'from distutils.sysconfig import get_python_lib as gpl; print(gpl(1))' 2>/dev/null)}
-
-
-# Define conditionals so that "rpmbuild --with <feature>" and
-# "rpmbuild --without <feature>" can enable and disable specific features
-
-## NOTE: skip --with stonithd
-
-## Add option to enable support for storing sensitive information outside CIB
-%bcond_with cibsecrets
-
-## Add option to create binaries suitable for use with profiling tools
-%bcond_with profiling
-
-## Add option to create binaries with coverage analysis
-%bcond_with coverage
-
-## Add option to skip/enable generating documentation
-## (the build tools aren't available everywhere)
-%bcond_without doc
-
-## Add option to prefix package version with "0."
-## (so later "official" packages will be considered updates)
-%bcond_with pre_release
-
-## NOTE: skip --with upstart_job
-
-## Add option to turn off hardening of libraries and daemon executables
-%bcond_without hardening
-
-## Add option to disable links for legacy daemon names
-%bcond_without legacy_links
-
 
 # Keep sane profiling data if requested
 %if %{with profiling}
@@ -141,86 +157,78 @@ Release:       %{pcmk_release}
 License:       GPLv2+ and LGPLv2+
 Url:           https://www.clusterlabs.org
 
-# Hint: use "spectool -s 0 pacemaker.spec" (rpmdevtools) to check the final URL
+# You can use "spectool -s 0 pacemaker.spec" (rpmdevtools) to show final URL.
 Source0:       https://codeload.github.com/%{github_owner}/%{name}/tar.gz/%{archive_github_url}
-Source1:       nagios-agents-metadata-%{nagios_hash}.tar.gz
+Source1:       https://codeload.github.com/%{github_owner}/%{nagios_name}/tar.gz/%{nagios_archive_github_url}
 
 # upstream commits
-Patch1:        001-acl-group-schema.patch
-Patch2:        002-fencing-reasons.patch
-Patch3:        003-fencing-reasons.patch
-Patch4:        004-systemd-metadata.patch
-Patch5:        005-fencing-reasons.patch
-Patch6:        006-stateful-metadata.patch
-Patch7:        007-memory-leak.patch
-Patch8:        008-fencing-history.patch
-Patch9:        009-fencing-reasons.patch
-Patch10:       010-probe-failures.patch
-Patch11:       011-fencing-reasons.patch
-Patch12:       012-notify-crash.patch
-Patch13:       013-probe-failures.patch
-Patch14:       014-pcmk_delay_base.patch
-Patch15:       015-fencing-reasons.patch
-Patch16:       016-fencing-crash.patch
-Patch17:       017-fencing-reasons.patch
-Patch18:       018-failure-messages.patch
-Patch19:       019-corosync-tracking.patch
-Patch20:       020-systemd-unit.patch
-Patch21:       021-failure-messages.patch
-Patch22:       022-memory-leak.patch
-Patch23:       023-regression.patch
-
+Patch0:        0001-Fix-tools-Don-t-output-null-in-crm_attribute-s-quiet.patch
 
 Requires:      resource-agents
-Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{pkgname_pcmk_libs} = %{version}-%{release}
 Requires:      %{name}-cluster-libs = %{version}-%{release}
 Requires:      %{name}-cli = %{version}-%{release}
 %{?systemd_requires}
 
-# Pacemaker requires a minimum Python functionality
-Requires:      %{python_name} >= %{python_min}
-BuildRequires: make
-BuildRequires: %{python_name}-devel >= %{python_min}
-BuildRequires: libcmocka-devel
+Requires:      %{python_path}
+BuildRequires: %{python_name}-devel
+
 # Pacemaker requires a minimum libqb functionality
 Requires:      libqb >= 0.17.0
 BuildRequires: libqb-devel >= 0.17.0
 
-# Basics required for the build (even if usually satisfied through other BRs)
-BuildRequires: coreutils findutils grep sed
+# Required basic build tools
+BuildRequires: autoconf
+BuildRequires: automake
+BuildRequires: coreutils
+BuildRequires: findutils
+BuildRequires: gcc
+BuildRequires: grep
+BuildRequires: libtool
+%if %{defined pkgname_libtool_devel}
+BuildRequires: %{?pkgname_libtool_devel}
+%endif
+BuildRequires: make
+BuildRequires: pkgconfig
+BuildRequires: sed
 
 # Required for core functionality
-BuildRequires: automake autoconf gcc libtool pkgconfig libtool-ltdl-devel
 BuildRequires: pkgconfig(glib-2.0) >= 2.42
-BuildRequires: libxml2-devel libxslt-devel libuuid-devel
-BuildRequires: bzip2-devel
+BuildRequires: libxml2-devel
+BuildRequires: libxslt-devel
+BuildRequires: libuuid-devel
+BuildRequires: %{pkgname_bzip2_devel}
 
 # Enables optional functionality
-# BuildRequires: docbook-style-xsl libgnutls-devel docbook-xsl-stylesheets
-BuildRequires: ncurses-devel 
-BuildRequires: help2man gnutls-devel pam-devel pkgconfig(dbus-1) 
+BuildRequires: pkgconfig(dbus-1)
+BuildRequires: %{pkgname_docbook_xsl}
+BuildRequires: %{pkgname_gnutls_devel}
+BuildRequires: help2man
+BuildRequires: ncurses-devel
+BuildRequires: pam-devel
+BuildRequires: %{pkgname_gettext} >= 0.18
+
+# Required for "make check"
+BuildRequires: libcmocka-devel
 
 BuildRequires: pkgconfig(systemd)
 
-Requires:      corosync >= 3.1.1
-BuildRequires: corosynclib-devel >= 3.1.1
-#XXX
-#BuildRequires: pkgconfig(libcpg)
-#BuildRequires: pkgconfig(libcfg)
-
-%if %{with stonithd}
-BuildRequires: libglue-devel
-%endif
-
-
-# git-style patch application
+# RH patches are created by git, so we need git to apply them
 BuildRequires: git
 
+Requires:      corosync >= 2.0.0
+BuildRequires: corosync-devel >= 2.0.0
+
+%if %{with stonithd}
+BuildRequires: %{pkgname_glue_libs}-devel
+%endif
+
 Provides:      pcmk-cluster-manager = %{version}-%{release}
 Provides:      pcmk-cluster-manager = %{version}-%{release}
 
-# Pacemaker uses the crypto/md5 module from gnulib
-Provides:      bundled(gnulib)
+# Bundled bits
+## Pacemaker uses the crypto/md5-buffer module from gnulib
+Provides:      bundled(gnulib) = 20200404
 
 %description
 Pacemaker is an advanced, scalable High-Availability cluster resource
@@ -239,12 +247,13 @@ Available rpmbuild rebuild options:
 %package cli
 License:       GPLv2+ and LGPLv2+
 Summary:       Command line tools for controlling Pacemaker clusters
-Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{pkgname_pcmk_libs} = %{version}-%{release}
+Recommends:    pcmk-cluster-manager = %{version}-%{release}
 # For crm_report
 Recommends:    tar
 Recommends:    bzip2
 Requires:      perl-TimeDate
-Requires:      procps-ng
+Requires:      %{pkgname_procps}
 Requires:      psmisc
 Requires(post):coreutils
 
@@ -256,25 +265,29 @@ The %{name}-cli package contains command line tools that can be used
 to query and control the cluster from machines that may, or may not,
 be part of the cluster.
 
-%package libs
+%package -n %{pkgname_pcmk_libs}
 License:       GPLv2+ and LGPLv2+
 Summary:       Core Pacemaker libraries
-Requires(pre): shadow-utils
+Requires(pre): %{pkgname_shadow_utils}
 Requires:      %{name}-schemas = %{version}-%{release}
 # sbd 1.4.0+ supports the libpe_status API for pe_working_set_t
-Conflicts:     sbd < 1.4.2
+# sbd 1.4.2+ supports startup/shutdown handshake via pacemakerd-api
+#            and handshake defaults to enabled for rhel builds
+# sbd 1.5.0+ handshake defaults to enabled with upstream sbd-release
+#            implicitly supports handshake defaults to enabled in this spec
+Conflicts:     sbd < 1.5.0
 
-%description libs
+%description -n %{pkgname_pcmk_libs}
 Pacemaker is an advanced, scalable High-Availability cluster resource
 manager.
 
-The %{name}-libs package contains shared libraries needed for cluster
+The %{pkgname_pcmk_libs} package contains shared libraries needed for cluster
 nodes and those just running the CLI tools.
 
 %package cluster-libs
 License:       GPLv2+ and LGPLv2+
 Summary:       Cluster Libraries used by Pacemaker
-Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{pkgname_pcmk_libs} = %{version}-%{release}
 
 %description cluster-libs
 Pacemaker is an advanced, scalable High-Availability cluster resource
@@ -285,8 +298,8 @@ libraries needed for nodes that will form part of the cluster nodes.
 
 %package remote
 License:       GPLv2+ and LGPLv2+
-Summary:       Pacemaker remote daemon for non-cluster nodes
-Requires:      %{name}-libs = %{version}-%{release}
+Summary:       Pacemaker remote executor daemon for non-cluster nodes
+Requires:      %{pkgname_pcmk_libs} = %{version}-%{release}
 Requires:      %{name}-cli = %{version}-%{release}
 Requires:      resource-agents
 # -remote can be fully independent of systemd
@@ -302,35 +315,40 @@ The %{name}-remote package contains the Pacemaker Remote daemon
 which is capable of extending pacemaker functionality to remote
 nodes not running the full corosync/cluster stack.
 
-%package libs-devel
+%package -n %{pkgname_pcmk_libs}-devel
 License:       GPLv2+ and LGPLv2+
 Summary:       Pacemaker development package
-Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{pkgname_pcmk_libs} = %{version}-%{release}
 Requires:      %{name}-cluster-libs = %{version}-%{release}
-Requires:      libtool-ltdl-devel libuuid-devel
-Requires:      libxml2-devel libxslt-devel
-Requires:      bzip2-devel glib2-devel
+Requires:      %{pkgname_bzip2_devel}
+Requires:      corosync-devel >= 2.0.0
+Requires:      glib2-devel
 Requires:      libqb-devel
-Requires:      corosynclib-devel >= 2.0.0
+%if %{defined pkgname_libtool_devel_arch}
+Requires:      %{?pkgname_libtool_devel_arch}
+%endif
+Requires:      libuuid-devel
+Requires:      libxml2-devel
+Requires:      libxslt-devel
 
-%description libs-devel
+%description -n %{pkgname_pcmk_libs}-devel
 Pacemaker is an advanced, scalable High-Availability cluster resource
 manager.
 
-The %{name}-libs-devel package contains headers and shared libraries
+The %{pkgname_pcmk_libs}-devel package contains headers and shared libraries
 for developing tools for Pacemaker.
 
 %package       cts
 License:       GPLv2+ and LGPLv2+
 Summary:       Test framework for cluster-related technologies like Pacemaker
-Requires:      %{python_name} >= %{python_min}
 Requires:      %{python_path}
-Requires:      %{name}-libs = %{version}-%{release}
+Requires:      %{pkgname_pcmk_libs} = %{version}-%{release}
 Requires:      %{name}-cli = %{version}-%{release}
-Requires:      procps
+Requires:      %{pkgname_procps}
 Requires:      psmisc
 BuildArch:     noarch
 
+# systemd Python bindings are a separate package in some distros
 Requires:      %{python_name}-systemd
 
 %description   cts
@@ -340,6 +358,8 @@ Test framework for cluster-related technologies like Pacemaker
 License:       CC-BY-SA-4.0
 Summary:       Documentation for Pacemaker
 BuildArch:     noarch
+Conflicts:     %{name}-libs > %{version}-%{release}
+Conflicts:     %{name}-libs < %{version}-%{release}
 
 %description   doc
 Documentation for Pacemaker.
@@ -375,32 +395,13 @@ The metadata files required for Pacemaker to execute the nagios plugin
 monitor resources.
 
 %prep
-%setup -q -a 1 -n %{name}-%{archive_version}
-%patch1 -p1
-%patch2 -p1
-%patch3 -p1
-%patch4 -p1
-%patch5 -p1
-%patch6 -p1
-%patch7 -p1
-%patch8 -p1
-%patch9 -p1
-%patch10 -p1
-%patch11 -p1
-%patch12 -p1
-%patch13 -p1
-%patch14 -p1
-%patch15 -p1
-%patch16 -p1
-%patch17 -p1
-%patch18 -p1
-%patch19 -p1
-%patch20 -p1
-%patch21 -p1
-%patch22 -p1
-%patch23 -p1
+%autosetup -a 1 -n %{name}-%{archive_version} -S git_am -p 1
+# in f33 s390x complains but shouldn't hurt globally
+# as configure.ac is checking for support
+sed -i configure.ac -e "s/-Wall/-Wall -Wno-format-truncation/"
 
 %build
+
 export systemdsystemunitdir=%{?_unitdir}%{!?_unitdir:no}
 
 %if %{with hardening}
@@ -417,27 +418,28 @@ export LDFLAGS_HARDENED_LIB="%{?_hardening_ldflags}"
 
 ./autogen.sh
 
-# Rawhide glibc doesn't like ftime at all
-export CPPFLAGS="-UPCMK_TIME_EMERGENCY_CGT $CPPFLAGS"
-
 %{configure}                                                                    \
         PYTHON=%{python_path}                                                   \
         %{!?with_hardening:    --disable-hardening}                             \
-        %{!?with_legacy_links: --disable-legacy-links}                          \
+        %{?with_legacy_links:  --enable-legacy-links}                           \
         %{?with_profiling:     --with-profiling}                                \
-        %{?with_coverage:      --with-coverage}                                 \
         %{?with_cibsecrets:    --with-cibsecrets}                               \
-        %{!?with_doc:          --with-brand=}                                   \
+        %{?with_nls:           --enable-nls}                                    \
+        %{?with_sbd_sync:      --with-sbd-sync-default="true"}                  \
         %{?gnutls_priorities:  --with-gnutls-priorities="%{gnutls_priorities}"} \
+        %{?bug_url:            --with-bug-url=%{bug_url}}                       \
+        %{?ocf_root:           --with-ocfdir=%{ocf_root}}                       \
+        %{?concurrent_fencing}                                                  \
+        %{?resource_stickiness}                                                 \
+        %{?compat20}                                                            \
         --disable-static                                                        \
         --with-initdir=%{_initrddir}                                            \
         --with-runstatedir=%{_rundir}                                           \
         --localstatedir=%{_var}                                                 \
-        --with-version=%{version}-%{release}                                    \
-        --with-bug-url=https://bugz.fedoraproject.org/%{name}                   \
-        --with-nagios                                                           \
-        --with-nagios-metadata-dir=%{_datadir}/pacemaker/nagios/plugins-metadata/  \
-        --with-nagios-plugin-dir=%{_libdir}/nagios/plugins/
+        --with-nagios                                                             \
+        --with-nagios-metadata-dir=%{_datadir}/pacemaker/nagios/plugins-metadata/ \
+        --with-nagios-plugin-dir=%{_libdir}/nagios/plugins/                       \
+        --with-version=%{version}-%{release}
 
 make %{_smp_mflags} V=1
 
@@ -458,13 +460,6 @@ make install \
   DESTDIR=%{buildroot} V=1 docdir=%{pcmk_docdir} \
   %{?_python_bytecompile_extra:%{?py_byte_compile:am__py_compile=true}}
 
-%if %{with upstart_job}
-mkdir -p ${RPM_BUILD_ROOT}%{_sysconfdir}/init
-install -m 644 pacemakerd/pacemaker.upstart ${RPM_BUILD_ROOT}%{_sysconfdir}/init/pacemaker.conf
-install -m 644 pacemakerd/pacemaker.combined.upstart ${RPM_BUILD_ROOT}%{_sysconfdir}/init/pacemaker.combined.conf
-install -m 644 tools/crm_mon.upstart ${RPM_BUILD_ROOT}%{_sysconfdir}/init/crm_mon.conf
-%endif
-
 mkdir -p %{buildroot}%{_datadir}/pacemaker/nagios/plugins-metadata
 for file in $(find %{nagios_name}-%{nagios_hash}/metadata -type f); do
     install -m 644 $file %{buildroot}%{_datadir}/pacemaker/nagios/plugins-metadata
@@ -473,11 +468,7 @@ done
 
 mkdir -p ${RPM_BUILD_ROOT}%{_localstatedir}/lib/rpm-state/%{name}
 
-# These are not actually scripts
-find %{buildroot} -name '*.xml' -type f -print0 | xargs -0 chmod a-x
-
-# Don't package static libs
-find %{buildroot} -name '*.a' -type f -print0 | xargs -0 rm -f
+# Don't package libtool archives
 find %{buildroot} -name '*.la' -type f -print0 | xargs -0 rm -f
 
 # Do not package these either
@@ -490,26 +481,12 @@ rm -f %{buildroot}/%{_mandir}/man8/fence_legacy.*
 rm -f %{buildroot}/%{_sbindir}/notifyServicelogEvent
 rm -f %{buildroot}/%{_sbindir}/ipmiservicelogd
 
-# Don't ship init scripts for systemd based platforms
-rm -f %{buildroot}/%{_initrddir}/pacemaker
-rm -f %{buildroot}/%{_initrddir}/pacemaker_remote
-
 # Byte-compile Python sources where suitable and the distro procedures known
-%if %{defined py_byte_compile} 
+%if %{defined py_byte_compile}
 %{py_byte_compile %{python_path} %{buildroot}%{_datadir}/pacemaker/tests}
 %if !%{defined _python_bytecompile_extra}
 %{py_byte_compile %{python_path} %{buildroot}%{python_site}/cts}
 %endif
-%endif
-
-%if %{with coverage}
-GCOV_BASE=%{buildroot}/%{_var}/lib/pacemaker/gcov
-mkdir -p $GCOV_BASE
-find . -name '*.gcno' -type f | while read F ; do
-        D=`dirname $F`
-        mkdir -p ${GCOV_BASE}/$D
-        cp $F ${GCOV_BASE}/$D
-done
 %endif
 
 %post
@@ -572,15 +549,14 @@ fi
 %postun cli
 %systemd_postun_with_restart crm_mon.service
 
-%pre libs
-# XXX keep an eye on https://fedoraproject.org/wiki/Changes/SystemdSysusers
-#     reopened recently:
-# https://lists.fedoraproject.org/archives/list/devel@lists.fedoraproject.org/message/AETGESYR4IEQJMA6SKL7OERSDZFWFNEU/
+%pre -n %{pkgname_pcmk_libs}
+# @TODO Use sysusers.d:
+# https://fedoraproject.org/wiki/Changes/Adopting_sysusers.d_format
 getent group %{gname} >/dev/null || groupadd -r %{gname} -g %{hacluster_id}
 getent passwd %{uname} >/dev/null || useradd -r -g %{gname} -u %{hacluster_id} -s /sbin/nologin -c "cluster user" %{uname}
 exit 0
 
-%ldconfig_scriptlets libs
+%ldconfig_scriptlets -n %{pkgname_pcmk_libs}
 %ldconfig_scriptlets cluster-libs
 
 %files
@@ -595,17 +571,17 @@ exit 0
 %exclude %{_libexecdir}/pacemaker/cts-log-watcher
 %exclude %{_libexecdir}/pacemaker/cts-support
 %exclude %{_sbindir}/pacemaker-remoted
-%if %{with legacy_links}
 %exclude %{_sbindir}/pacemaker_remoted
-%endif
 %{_libexecdir}/pacemaker/*
 
-%{_sbindir}/crm_attribute
 %{_sbindir}/crm_master
 %{_sbindir}/fence_watchdog
 
-
-%doc %{_mandir}/man8/crm_attribute.*
+%doc %{_mandir}/man7/pacemaker-controld.*
+%doc %{_mandir}/man7/pacemaker-schedulerd.*
+%doc %{_mandir}/man7/pacemaker-fenced.*
+%doc %{_mandir}/man7/ocf_pacemaker_controld.*
+%doc %{_mandir}/man7/ocf_pacemaker_remote.*
 %doc %{_mandir}/man8/crm_master.*
 %doc %{_mandir}/man8/fence_watchdog.*
 %doc %{_mandir}/man8/pacemakerd.*
@@ -618,8 +594,8 @@ exit 0
 
 %dir %attr (750, %{uname}, %{gname}) %{_var}/lib/pacemaker/cib
 %dir %attr (750, %{uname}, %{gname}) %{_var}/lib/pacemaker/pengine
-/usr/lib/ocf/resource.d/pacemaker/controld
-/usr/lib/ocf/resource.d/pacemaker/remote
+%{ocf_root}/resource.d/pacemaker/controld
+%{ocf_root}/resource.d/pacemaker/remote
 
 %files cli
 %dir %attr (750, root, %{gname}) %{_sysconfdir}/pacemaker
@@ -633,6 +609,7 @@ exit 0
 %if %{with cibsecrets}
 %{_sbindir}/cibsecret
 %endif
+%{_sbindir}/crm_attribute
 %{_sbindir}/crm_diff
 %{_sbindir}/crm_error
 %{_sbindir}/crm_failcount
@@ -655,15 +632,22 @@ exit 0
 # XXX "dirname" is not owned by any prerequisite
 %{_datadir}/snmp/mibs/PCMK-MIB.txt
 
-%exclude /usr/lib/ocf/resource.d/pacemaker/controld
-%exclude /usr/lib/ocf/resource.d/pacemaker/remote
+%exclude %{ocf_root}/resource.d/pacemaker/controld
+%exclude %{ocf_root}/resource.d/pacemaker/o2cb
+%exclude %{ocf_root}/resource.d/pacemaker/remote
 
-%dir /usr/lib/ocf
-%dir /usr/lib/ocf/resource.d
-/usr/lib/ocf/resource.d/pacemaker
+%dir %{ocf_root}
+%dir %{ocf_root}/resource.d
+%{ocf_root}/resource.d/pacemaker
 
+%doc %{_mandir}/man7/*
+%exclude %{_mandir}/man7/pacemaker-controld.*
+%exclude %{_mandir}/man7/pacemaker-schedulerd.*
+%exclude %{_mandir}/man7/pacemaker-fenced.*
+%exclude %{_mandir}/man7/ocf_pacemaker_controld.*
+%exclude %{_mandir}/man7/ocf_pacemaker_o2cb.*
+%exclude %{_mandir}/man7/ocf_pacemaker_remote.*
 %doc %{_mandir}/man8/*
-%exclude %{_mandir}/man8/crm_attribute.*
 %exclude %{_mandir}/man8/crm_master.*
 %exclude %{_mandir}/man8/fence_watchdog.*
 %exclude %{_mandir}/man8/pacemakerd.*
@@ -679,7 +663,7 @@ exit 0
 %dir %attr (770, %{uname}, %{gname}) %{_var}/log/pacemaker
 %dir %attr (770, %{uname}, %{gname}) %{_var}/log/pacemaker/bundles
 
-%files libs
+%files -n %{pkgname_pcmk_libs} %{?with_nls:-f %{name}.lang}
 %{_libdir}/libcib.so.*
 %{_libdir}/liblrmd.so.*
 %{_libdir}/libcrmservice.so.*
@@ -728,12 +712,9 @@ exit 0
 %doc COPYING
 %doc ChangeLog
 
-%files libs-devel
+%files -n %{pkgname_pcmk_libs}-devel
 %{_includedir}/pacemaker
 %{_libdir}/*.so
-%if %{with coverage}
-%{_var}/lib/pacemaker/gcov
-%endif
 %{_libdir}/pkgconfig/*.pc
 %license licenses/LGPLv2.1
 %doc COPYING
@@ -745,6 +726,7 @@ exit 0
 %{_datadir}/pacemaker/*.rng
 %{_datadir}/pacemaker/*.xsl
 %{_datadir}/pacemaker/api
+%{_datadir}/pacemaker/base
 %{_datadir}/pkgconfig/pacemaker-schemas.pc
 
 %files nagios-plugins-metadata
@@ -754,6 +736,9 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Mon Feb 06 2023 jiangxinyu <jiangxinyu@kylinos.cn> - 2.1.4-1
+- Update package to version 2.1.4
+
 * Tue Jul 26 2022 Bixiaoyan <bixiaoyan@kylinos.cn> - 2.1.2-1
 - upgrade to 2.1.2
 
