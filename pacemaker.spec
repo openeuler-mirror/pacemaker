@@ -17,7 +17,7 @@
 ## can be incremented to build packages reliably considered "newer"
 ## than previously built packages with the same pcmkversion)
 %global pcmkversion 2.1.4
-%global specversion 1
+%global specversion 2
 
 ## Upstream commit (full commit ID, abbreviated commit ID, or tag) to build
 %global commit dc6eb4362e67c1497a413434eba097063bf1ef83
@@ -402,6 +402,10 @@ sed -i configure.ac -e "s/-Wall/-Wall -Wno-format-truncation/"
 
 %build
 
+%if "%toolchain" == "clang"
+	export CFLAGS="$CFLAGS -Wno-error=strict-prototypes -Wno-error=unused-but-set-variable"
+	export CXXFLAGS="$CXXFLAGS -wno-error=strict-prototypes -Wno-error=unused-but-set-variable"
+%endif
 export systemdsystemunitdir=%{?_unitdir}%{!?_unitdir:no}
 
 %if %{with hardening}
@@ -736,6 +740,9 @@ exit 0
 %license %{nagios_name}-%{nagios_hash}/COPYING
 
 %changelog
+* Sat May 06 2023 yoo <sunyuechi@iscas.ac.cn> - 2.1.4-2
+- fix clang build error
+
 * Mon Feb 06 2023 jiangxinyu <jiangxinyu@kylinos.cn> - 2.1.4-1
 - Update package to version 2.1.4
 
